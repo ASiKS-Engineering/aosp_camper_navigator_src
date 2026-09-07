@@ -1,0 +1,4 @@
+- [ ] Implement +3 km/h speed offset in `MapScreen.kt`
+- [ ] Ensure standstill (0 km/h) is handled correctly
+- [ ] Verify speed display in km/h and mph
+- [ ] Final verification and walkthrough
