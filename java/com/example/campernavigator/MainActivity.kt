@@ -47,7 +47,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.location.LocationManager
 import android.net.Uri
-import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 
@@ -254,6 +253,20 @@ class MainActivity : ComponentActivity() {
                     }
                 )
                 mapViewModel = mapViewModelInstance
+
+                when (intent?.getStringExtra(EXTRA_NAVIGATION_UI_MODE)) {
+                    MODE_HOME -> {
+                        mapViewModelInstance.setNavigationUiMode(
+                            NavigationUiMode.HOME
+                        )
+                    }
+
+                    MODE_FOREGROUND -> {
+                        mapViewModelInstance.setNavigationUiMode(
+                            NavigationUiMode.FOREGROUND
+                        )
+                    }
+                }
 
                 val uiState by mapViewModelInstance.uiState.collectAsState()
                 var forceHideSplash by remember { mutableStateOf(false) }
