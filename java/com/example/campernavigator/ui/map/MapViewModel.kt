@@ -54,6 +54,11 @@ import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
 import org.json.JSONObject
 
+enum class NavigationUiMode {
+    HOME,
+    FOREGROUND
+}
+
 data class MapUiState(
     val currentRoute: Route? = null,
     val selectedVehicle: VehicleProfile = VehicleProfile("Standard Camper", VehicleType.CAMPER, 3.2, 2.3, 6.0, 3.5),
@@ -134,7 +139,7 @@ data class MapUiState(
     val routingMode: RoutingMode = RoutingMode.FASTEST,
     val installedVehicleIds: Set<String> = emptySet(),
     val vehicleImportState: DownloadState = DownloadState.Idle,
-    val isLauncherVisible: Boolean = false, // Default to Home mode for safer embedding
+    val navigationUiMode: NavigationUiMode = NavigationUiMode.HOME,
     val isCameraTracking: Boolean = true
 )
 
@@ -472,9 +477,11 @@ class MapViewModel(
     fun setHomeAddress(result: SearchResult) { _uiState.update { it.copy(homeAddress = result) } }
     fun setInitialZoomPerformed(p: Boolean) { _uiState.update { it.copy(isInitialZoomPerformed = p) } }
     fun setMapReady(r: Boolean) { _uiState.update { it.copy(isMapReady = r) }; if (r) startLocationTracking() }
-    fun setLauncherVisibility(visible: Boolean) { 
-        FileLogger.log("MapViewModel: setLauncherVisibility changed to $visible")
-        _uiState.update { it.copy(isLauncherVisible = visible) } 
+    fun setNavigationUiMode(mode: NavigationUiMode) {
+        FileLogger.log("MapViewModel: navigationUiMode changed to $mode")
+        _uiState.update {
+            it.copy(navigationUiMode = mode)
+        }
     }
     fun setCameraTracking(active: Boolean) { _uiState.update { it.copy(isCameraTracking = active) } }
 

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.campernavigator.service.FakeRoutingService
 import com.example.campernavigator.service.GraphHopperEngine
@@ -50,15 +51,47 @@ import android.os.PowerManager
 import android.provider.Settings
 
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        const val ACTION_NAVIGATION_UI_MODE_CHANGED =
+            "com.example.campernavigator.action.NAVIGATION_UI_MODE_CHANGED"
+
+        const val EXTRA_NAVIGATION_UI_MODE =
+            "com.example.campernavigator.extra.NAVIGATION_UI_MODE"
+
+        const val MODE_HOME = "HOME"
+        const val MODE_FOREGROUND = "FOREGROUND"
+    }
     
     private var mapViewModel: MapViewModel? = null
 
-    private val visibilityReceiver = object : BroadcastReceiver() {
+    private val navigationUiModeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == "com.example.campernavigator.LOCAL_VISIBILITY_CHANGED") {
-                val visible = intent.getBooleanExtra("VISIBLE", true)
-                FileLogger.log("MainActivity: Local visibility update received: $visible")
-                mapViewModel?.setLauncherVisibility(visible)
+            if (intent.action != ACTION_NAVIGATION_UI_MODE_CHANGED) {
+                return
+            }
+
+            when (intent.getStringExtra(EXTRA_NAVIGATION_UI_MODE)) {
+
+                MODE_HOME -> {
+                    FileLogger.log(
+                        "MainActivity: navigation UI mode -> HOME"
+                    )
+
+                    mapViewModel?.setNavigationUiMode(
+                        NavigationUiMode.HOME
+                    )
+                }
+
+                MODE_FOREGROUND -> {
+                    FileLogger.log(
+                        "MainActivity: navigation UI mode -> FOREGROUND"
+                    )
+
+                    mapViewModel?.setNavigationUiMode(
+                        NavigationUiMode.FOREGROUND
+                    )
+                }
             }
         }
     }
@@ -109,26 +142,36 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val showMenu = intent.getBooleanExtra("SHOW_MENU", false)
-        FileLogger.log("MainActivity: onNewIntent received - SHOW_MENU=$showMenu")
-        if (showMenu) {
-            mapViewModel?.setLauncherVisibility(true)
+
+        when (intent.getStringExtra(EXTRA_NAVIGATION_UI_MODE)) {
+
+            MODE_HOME -> {
+                FileLogger.log(
+                    "MainActivity: onNewIntent -> HOME"
+                )
+
+                mapViewModel?.setNavigationUiMode(
+                    NavigationUiMode.HOME
+                )
+            }
+
+            MODE_FOREGROUND -> {
+                FileLogger.log(
+                    "MainActivity: onNewIntent -> FOREGROUND"
+                )
+
+                mapViewModel?.setNavigationUiMode(
+                    NavigationUiMode.FOREGROUND
+                )
+            }
         }
     }
 
     override fun onResume() {
         super.onResume()
-        val inMultiWindow = isInMultiWindowMode
-        FileLogger.log("MainActivity: onResume - inMultiWindow=$inMultiWindow")
-        
-        // AUTO-DETECTION: If we are NOT in multi-window (TaskView), we are fullscreen.
-        if (!inMultiWindow) {
-            FileLogger.log("MainActivity: Fullscreen detected, forcing menu visibility ON")
-            mapViewModel?.setLauncherVisibility(true)
-        } else {
-            FileLogger.log("MainActivity: TaskView (Home) detected, menu visibility handled by Launcher signal")
-        }
-        
+
+        FileLogger.log("MainActivity: onResume")
+
         mapViewModel?.startLocationTracking()
     }
 
@@ -140,7 +183,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         try {
-            unregisterReceiver(visibilityReceiver)
+            unregisterReceiver(navigationUiModeReceiver)
         } catch (e: Exception) {}
     }
 
@@ -153,15 +196,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         
         MapLibre.getInstance(this)
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(visibilityReceiver, IntentFilter("com.example.campernavigator.LOCAL_VISIBILITY_CHANGED"),
-                RECEIVER_EXPORTED
-            )
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(visibilityReceiver, IntentFilter("com.example.campernavigator.LOCAL_VISIBILITY_CHANGED"))
-        }
+
+        ContextCompat.registerReceiver(
+            this,
+            navigationUiModeReceiver,
+            IntentFilter(ACTION_NAVIGATION_UI_MODE_CHANGED),
+            ContextCompat.RECEIVER_EXPORTED
+        )
         
         val mapHttpClient = OkHttpClient.Builder()
             .addInterceptor(TileInterceptor())

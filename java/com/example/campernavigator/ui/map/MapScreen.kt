@@ -413,22 +413,55 @@ fun MapScreen(
 
         // Hintergrund-Modus (Launcher): 1/6 Verschiebung nach rechts (Padding links = 1/3)
         // Dies lässt rechts 1/3 Platz für das Media-Overlay
-        if (!uiState.isLauncherVisible) {
-            val leftPadding = w / 3
-            map.setPadding(leftPadding, h / 3, 0, 0)
-            try {
-                map.locationComponent.applyStyle(buildLocationOptions(h / 3))
-            } catch (e: Exception) {}
-            return
-        }
+        when (uiState.navigationUiMode) {
 
-        // Standard: CCP im unteren Drittel (Padding von oben = 1/3)
-        val topPadding = h / 3
-        map.setPadding(0, topPadding, 0, 0)
-        
-        try {
-            map.locationComponent.applyStyle(buildLocationOptions(topPadding))
-        } catch (e: Exception) { }
+            NavigationUiMode.HOME -> {
+
+                // Map stays physically fullscreen.
+                // Only the camera/CCP is shifted to make room
+                // for the CarLauncher overlay.
+                val leftPadding =
+                    (w * 0.18f).roundToInt()
+
+                val topPadding =
+                    (h * 0.20f).roundToInt()
+
+                map.setPadding(
+                    leftPadding,
+                    topPadding,
+                    0,
+                    0
+                )
+
+                try {
+                    map.locationComponent.applyStyle(
+                        buildLocationOptions(topPadding)
+                    )
+                } catch (e: Exception) {
+                }
+
+                return
+            }
+
+            NavigationUiMode.FOREGROUND -> {
+
+                val topPadding = h / 3
+
+                map.setPadding(
+                    0,
+                    topPadding,
+                    0,
+                    0
+                )
+
+                try {
+                    map.locationComponent.applyStyle(
+                        buildLocationOptions(topPadding)
+                    )
+                } catch (e: Exception) {
+                }
+            }
+        }
     }
 
     fun resetCameraTracking() {
@@ -622,6 +655,375 @@ fun MapScreen(
         // --- NEW AUTOMOTIVE LAYOUT ---
 
         if (uiState.isLauncherVisible) {
+            // Top Status Bar
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(40.dp)
+                    .align(Alignment.TopCenter),
+                color = Color.Black.copy(alpha = 0.6f)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    // Ankunftszeit (ETA) während der Navigation
+                    if (uiState.isNavigating && uiState.remainingTime != null) {
+                        val arrivalTime = currentTime + uiState.remainingTime!!
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Flag,
+                                contentDescription = null,
+                                tint = Color(0xFF8BC34A),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = formatArrivalTime(arrivalTime),
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(Modifier.width(32.dp))
+                    }
+
+                    if (uiState.isOffline) {
+                        Icon(
+                            imageVector = Icons.Default.SignalCellularAlt,
+                            contentDescription = "Offline",
+                            tint = Color(0xFFE57373), // Red
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            "OFFLINE",
+                            color = Color(0xFFE57373),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(Modifier.width(16.dp))
+                    }
+
+                    Icon(Icons.Default.Wifi, null, tint = if (uiState.isOffline) Color.White.copy(alpha = 0.3f) else Color.White, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(8.dp))
+
+                    // Satellite Count
+                    if (uiState.satelliteCount != null) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.SatelliteAlt,
+                                null,
+                                tint = Color.White,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(Modifier.width(2.dp))
+                            Text(
+                                "${uiState.satelliteCount}",
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                    }
+
+                    Icon(Icons.Default.SignalCellularAlt, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(16.dp))
+                    Text("ARABELLA", color = Color.White, style = MaterialTheme.typography.labelMedium)
+                    Spacer(Modifier.width(16.dp))
+                    Icon(Icons.AutoMirrored.Filled.VolumeUp, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(16.dp))
+                    Text(
+                        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(currentTime)),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            // --- LEFT ROUTE PROGRESS BAR ---
+            if (uiState.isNavigating && uiState.currentRoute != null) {
+                val totalDist = uiState.currentRoute?.distance ?: 1.0
+                val remainDist = uiState.remainingDistance ?: totalDist
+                val progress = (1.0 - (remainDist / totalDist)).coerceIn(0.0, 1.0).toFloat()
+
+                Surface(
+                    modifier = Modifier
+                        .padding(start = 8.dp, top = 56.dp, bottom = 16.dp) // Von ganz oben bis zur Unterkante Menü
+                        .width(32.dp)
+                        .align(Alignment.TopStart),
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color.Black.copy(alpha = 0.5f)
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxHeight().padding(vertical = 12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            Icons.Default.Flag,
+                            null,
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp),
+                            contentAlignment = Alignment.BottomCenter
+                        ) {
+                            // Background Track (Gray)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .width(4.dp)
+                                    .background(Color.White.copy(alpha = 0.2f), RoundedCornerShape(2.dp))
+                            )
+
+                            // Remaining Route (Green - decreases as we drive)
+                            Box(
+                                modifier = Modifier
+                                    .width(4.dp)
+                                    .fillMaxHeight(1f - progress)
+                                    .align(Alignment.TopCenter)
+                                    .background(Color(0xFF8BC34A), RoundedCornerShape(2.dp))
+                            )
+
+                            // Small CCP Indicator (Moving Arrow)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight(progress)
+                                    .fillMaxWidth()
+                                    .align(Alignment.BottomCenter),
+                                contentAlignment = Alignment.TopCenter
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Navigation,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .offset(y = (-8).dp) // Center the arrow on the progress point
+                                )
+                            }
+                        }
+
+                        Icon(
+                            Icons.Default.MyLocation,
+                            null,
+                            tint = Color.White.copy(alpha = 0.5f),
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+            }
+
+            // Left Panel (Menu + Search or Navigation Info)
+            Surface(
+                modifier = Modifier
+                    .padding(start = 48.dp, bottom = 16.dp)
+                    .width(if (uiState.isNavigating) 240.dp else 280.dp)
+                    .align(Alignment.BottomStart),
+                shape = RoundedCornerShape(12.dp),
+                color = Color.Black.copy(alpha = 0.85f),
+                tonalElevation = 8.dp
+            ) {
+                Column(modifier = Modifier.padding(8.dp)) {
+                    // Icon Grid (Always available when expanded)
+                    AnimatedVisibility(visible = isPanelExpanded) {
+                        Column {
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(3),
+                                modifier = Modifier.heightIn(max = 200.dp),
+                                contentPadding = PaddingValues(8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                item {
+                                    IconButton(onClick = {
+                                        uiState.homeAddress?.let { home ->
+                                            val start = uiState.snappedLocation ?: uiState.rawLocation ?: LatLng(52.5200, 13.4050)
+                                            viewModel.calculateRoute(start = start, end = home.location)
+                                            isPanelExpanded = false
+                                        } ?: run { isMapManagementOpen = true }
+                                    }) {
+                                        Icon(
+                                            Icons.Default.Home,
+                                            "Home",
+                                            tint = if (uiState.homeAddress != null) Color.White else Color.White.copy(alpha = 0.3f)
+                                        )
+                                    }
+                                }
+                                item {
+                                    IconButton(onClick = {
+                                        isCampingSubmenuOpen = true
+                                        isPanelExpanded = false
+                                    }) {
+                                        Icon(
+                                            Icons.Default.Terrain,
+                                            "Campingplätze",
+                                            tint = Color.White
+                                        )
+                                    }
+                                }
+                                item {
+                                    IconButton(onClick = {
+                                        if (uiState.isNavigating) {
+                                            viewModel.stopNavigation()
+                                        } else {
+                                            isFavoritesOpen = true
+                                        }
+                                    }) {
+                                        Icon(
+                                            Icons.Default.Flag,
+                                            contentDescription = if (uiState.isNavigating) "Navigation beenden" else "Ziele",
+                                            tint = if (uiState.isNavigating) MaterialTheme.colorScheme.error else Color.White
+                                        )
+                                    }
+                                }
+                                item { IconButton(onClick = { }) { Icon(Icons.Default.LocalParking, "Parking", tint = Color.White) } }
+                                item { IconButton(onClick = { }) { Icon(Icons.Default.EvStation, "Charging", tint = Color.White) } }
+                                item { IconButton(onClick = { isMapManagementOpen = true }) { Icon(Icons.Default.Settings, "Settings", tint = Color.White) } }
+                            }
+                            HorizontalDivider(color = Color.White.copy(alpha = 0.2f), modifier = Modifier.padding(vertical = 4.dp))
+                        }
+                    }
+
+                    // Bottom Row (Stats or Search)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(64.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (uiState.isNavigating) {
+                            // --- NAVIGATION INFO ---
+                            // Stop Button (Gray / Matching design)
+                            Surface(
+                                modifier = Modifier
+                                    .size(56.dp)
+                                    .clickable { viewModel.stopNavigation() },
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color.White.copy(alpha = 0.15f)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Stop",
+                                        tint = Color(0xFFE57373), // Soft Red
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                }
+                            }
+
+                            Spacer(Modifier.width(16.dp))
+
+                            // Remaining Stats
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Flag, null, tint = Color.White, modifier = Modifier.size(14.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(
+                                        text = formatDuration(uiState.remainingTime ?: 0L),
+                                        color = Color.White,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Text(
+                                    text = "${String.format("%.0f", (uiState.remainingDistance ?: 0.0) / 1000.0)} km",
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
+                        } else {
+                            // --- SEARCH BAR ---
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .background(Color.White.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                                    .clickable { isSearchOverlayVisible = true }
+                                    .padding(horizontal = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Search, null, tint = Color.White.copy(alpha = 0.6f))
+                                Spacer(Modifier.width(12.dp))
+                                Text(
+                                    text = if (searchQuery.isEmpty()) "Hier suchen" else searchQuery,
+                                    color = if (searchQuery.isEmpty()) Color.Gray else Color.White,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1
+                                )
+                            }
+                        }
+
+                        // Expand/Collapse Chevron (Always available)
+                        IconButton(onClick = { isPanelExpanded = !isPanelExpanded }) {
+                            Icon(
+                                imageVector = if (isPanelExpanded) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
+                                contentDescription = null,
+                                tint = Color.White
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Bottom Street Name Bar
+            if (!uiState.currentStreetName.isNullOrBlank()) {
+                val panelWidth = if (uiState.isNavigating) 240.dp else 280.dp
+                Surface(
+                    modifier = Modifier
+                        .padding(start = 48.dp + panelWidth + 16.dp, bottom = 16.dp)
+                        .align(Alignment.BottomStart),
+                    shape = RoundedCornerShape(4.dp),
+                    color = Color.Black.copy(alpha = 0.7f)
+                ) {
+                    Text(
+                        uiState.currentStreetName!!,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                }
+            }
+
+            // --- SPEED INDICATOR (Top Left) ---
+            Column(
+                modifier = Modifier
+                    .padding(top = 56.dp, start = 48.dp) // Ein Stück nach rechts gerückt (Beginn Menü)
+                    .align(Alignment.TopStart)
+            ) {
+                val speedValue = when {
+                    uiState.currentSpeed < 0.277f -> 0 // Stillstand-Schwelle (~1 km/h)
+                    uiState.isMphEnabled -> (uiState.currentSpeed * 2.23694 + 1.86).toInt() // +3 km/h (~1.86 mph)
+                    else -> (uiState.currentSpeed * 3.6 + 3.0).toInt() // +3 km/h Aufschlag
+                }
+                val textColor = if (uiState.isNightMode) Color.White else Color.Black
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        text = "$speedValue",
+                        color = textColor,
+                        style = MaterialTheme.typography.displayLarge.copy(
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = if (uiState.isMphEnabled) "mph" else "km/h",
+                        color = textColor.copy(alpha = 0.6f),
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    )
+                }
+            }
+        }if (uiState.navigationUiMode == NavigationUiMode.FOREGROUND) {
             // Top Status Bar
             Surface(
                 modifier = Modifier
@@ -993,7 +1395,7 @@ fun MapScreen(
         }
 
         // Right Action Column
-        if (uiState.isLauncherVisible) {
+        if (uiState.navigationUiMode == NavigationUiMode.FOREGROUND) {
             Column(
                 modifier = Modifier
                     .padding(bottom = 60.dp, end = 16.dp)
@@ -2439,8 +2841,13 @@ fun MapScreen(
     }
 
     // TRIGGER: Sofortige Reaktion auf Launcher-Sichtbarkeit (Home/Nav Wechsel)
-    LaunchedEffect(uiState.isLauncherVisible) {
-        Log.d("MapScreen", "UI State Change: isLauncherVisible = ${uiState.isLauncherVisible} -> Updating padding and menu")
+    LaunchedEffect(uiState.navigationUiMode) {
+        Log.d(
+            "MapScreen",
+            "UI State Change: navigationUiMode = " +
+                    "${uiState.navigationUiMode} -> Updating padding and menu"
+        )
+
         updateMapPadding()
     }
 

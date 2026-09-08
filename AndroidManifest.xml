@@ -87,13 +87,6 @@
             android:foregroundServiceType="dataSync|location"
             tools:node="merge" />
 
-        <receiver
-            android:name=".LauncherMapsVisibilityReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="com.android.car.carlauncher.action.MAPS_VISIBILITY_CHANGED" />
-            </intent-filter>
-        </receiver>
 
     </application>
 
