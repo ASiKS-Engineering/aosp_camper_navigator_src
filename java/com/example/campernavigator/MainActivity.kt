@@ -26,6 +26,7 @@ import com.example.campernavigator.data.TrafficRepository
 import com.example.campernavigator.util.ConnectivityObserver
 import com.example.campernavigator.ui.map.MapScreen
 import com.example.campernavigator.ui.map.MapViewModel
+import com.example.campernavigator.ui.map.NavigationUiMode
 import com.example.campernavigator.ui.splash.SplashScreen
 import com.example.campernavigator.ui.theme.CamperNavigatorTheme
 import com.example.campernavigator.util.FileLogger
