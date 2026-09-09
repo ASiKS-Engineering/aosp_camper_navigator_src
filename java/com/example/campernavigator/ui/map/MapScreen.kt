@@ -1032,7 +1032,7 @@ fun MapScreen(
         }
 
         // Right Action Column
-        if (uiState.navigationUiMode == NavigationUiMode.FOREGROUND) {
+        if (uiState.navigationUiMode == NavigationUiMode.FULLSCREEN) {
             Column(
                 modifier = Modifier
                     .padding(bottom = 60.dp, end = 16.dp)
