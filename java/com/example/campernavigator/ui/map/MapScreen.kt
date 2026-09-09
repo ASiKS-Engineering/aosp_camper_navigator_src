@@ -586,7 +586,7 @@ fun MapScreen(
                 mapView.apply {
                     // Automatisches Padding-Update bei Layout-Änderungen
                     addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-                         updateMapPadding(isOverview = uiState.currentRoute != null && !uiState.isNavigating)
+                         updateMapPadding()
                     }
 
                     getMapAsync { map ->
