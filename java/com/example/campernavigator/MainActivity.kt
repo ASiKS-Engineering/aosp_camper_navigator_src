@@ -261,9 +261,9 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    MODE_FOREGROUND -> {
+                    MODE_FULLSCREEN -> {
                         mapViewModelInstance.setNavigationUiMode(
-                            NavigationUiMode.FOREGROUND
+                            NavigationUiMode.FULLSCREEN
                         )
                     }
                 }
