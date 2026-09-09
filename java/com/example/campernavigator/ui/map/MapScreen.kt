@@ -660,7 +660,7 @@ fun MapScreen(
         )
 
         // --- NEW AUTOMOTIVE LAYOUT ---
-        if (uiState.navigationUiMode == NavigationUiMode.FOREGROUND) {
+        if (uiState.navigationUiMode == NavigationUiMode.FULLSCREEN) {
             // Top Status Bar
             Surface(
                 modifier = Modifier
