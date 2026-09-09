@@ -442,24 +442,22 @@ fun MapScreen(
                 return
             }
 
-            NavigationUiMode.FOREGROUND -> {
-
-                val topPadding = h / 3
-
+            NavigationUiMode.FULLSCREEN -> {
                 map.setPadding(
                     0,
-                    topPadding,
+                    0,
                     0,
                     0
                 )
 
                 try {
                     map.locationComponent.applyStyle(
-                        buildLocationOptions(topPadding)
+                        buildLocationOptions(0)
                     )
-                } catch (e: Exception) {
-                }
-            }
+                 } catch (e: Exception) {
+                       // Ignore while map/location component is initializing.
+                 }
+             }
         }
     }
 
