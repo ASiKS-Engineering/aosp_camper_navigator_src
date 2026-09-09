@@ -45,7 +45,6 @@
             android:exported="true"
             android:label="@string/app_name"
             android:launchMode="singleTask"
-            android:documentLaunchMode="always"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|navigation"
             android:resizeableActivity="true"
             android:supportsPictureInPicture="true"
