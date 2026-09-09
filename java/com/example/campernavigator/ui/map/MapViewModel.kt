@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.Looper
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import com.example.campernavigator.NavigatorRuntime
 import com.example.campernavigator.model.VehicleProfile
 import com.example.campernavigator.model.VehicleType
 import com.example.campernavigator.model.RoutingMode
@@ -174,7 +175,7 @@ class MapViewModel(
     private var lastGpsUpdateMillis = 0L
     private var simulationJob: Job? = null
     
-    private val PREFS_NAME = "navigation_state"
+    private val PREFS_NAME = NavigatorRuntime.PREFS_NAME
     private val KEY_NORTH_UP = "is_north_up"
     private val KEY_POWER_SAVE = "power_save"
     private val KEY_AUTO_ZOOM = "auto_zoom"
@@ -184,6 +185,7 @@ class MapViewModel(
     private val KEY_MAP_MODE = "map_mode"
     private val KEY_ROUTING_MODE = "routing_mode"
     private val KEY_ACTIVE_VEHICLE = "active_vehicle_id"
+    private val KEY_ACTIVE_REGION = NavigatorRuntime.KEY_ACTIVE_REGION
 
     private var isLocationTrackingActive = false
 
@@ -202,10 +204,10 @@ class MapViewModel(
         // AUTO-LOAD MAP: Falls eine fertige Karte "MapPack_..." existiert, laden wir sie sofort
         viewModelScope.launch {
             delay(1000)
-            val foundMap = uiState.value.installedRegionIds.find { it.startsWith("MapPack_") }
-            if (foundMap != null && uiState.value.activeRegionId == null) {
-                FileLogger.log("MapViewModel: Auto-loading discovered map: $foundMap")
-                loadRegion(foundMap)
+            val regionToLoad = NavigatorRuntime.findWarmRegionId(graphHopperEngine.context)
+            if (regionToLoad != null && uiState.value.activeRegionId == null) {
+                FileLogger.log("MapViewModel: Auto-loading discovered map: $regionToLoad")
+                loadRegion(regionToLoad)
             }
         }
 
@@ -539,9 +541,11 @@ class MapViewModel(
             if (mbtilesFile != null) {
                 FileLogger.log("MapViewModel: SUCCESS - Found local MBTiles at ${mbtilesFile.absolutePath}")
                 LocalTileRegistry.register(id, mbtilesFile.absolutePath)
+                saveSetting(KEY_ACTIVE_REGION, id)
                 _uiState.update { it.copy(activeRegionId = id, isLoading = false, hasLocalTiles = true, localMBTilesPath = mbtilesFile.absolutePath) }
             } else {
                 FileLogger.log("MapViewModel: WARNING - No MBTiles found in $id. Using online fallback.", "ERROR")
+                saveSetting(KEY_ACTIVE_REGION, id)
                 _uiState.update { it.copy(activeRegionId = id, isLoading = false, hasLocalTiles = false) }
             }
         } catch (e: Exception) {

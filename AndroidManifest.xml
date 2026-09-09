@@ -29,6 +29,7 @@
     </queries>
 
     <application
+        android:name=".CamperNavigatorApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -80,6 +81,11 @@
                 <category android:name="android.intent.category.APP_NAVIGATION" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".NavigatorWarmupService"
+            android:exported="true"
+            android:permission="android.permission.WRITE_SECURE_SETTINGS" />
 
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
