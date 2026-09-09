@@ -362,10 +362,20 @@ fun MapScreen(
 
         val locationComponent = map.locationComponent
         
-        // CCP erst einmal zentriert lassen (kein Padding), bis der erste Fix da ist.
-        val topPadding = if (uiState.isInitialZoomPerformed) {
-            if (mapView.height > 0) mapView.height / 3 else 0
-        } else 0
+        val topPadding = when {
+            !uiState.isInitialZoomPerformed -> 0
+
+            uiState.navigationUiMode == NavigationUiMode.HOME ->
+                if (mapView.height > 0) {
+                    (mapView.height * 0.20f).roundToInt()
+                } else {
+                    0
+                }
+
+            NavigationUiMode.FULLSCREEN == uiState.navigationUiMode -> 0
+
+            else -> 0
+        }
         
         android.util.Log.d("MapScreen", "Aktiviere LocationComponent (Padding: $topPadding)")
 
