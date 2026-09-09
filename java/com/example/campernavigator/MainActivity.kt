@@ -60,7 +60,7 @@ class MainActivity : ComponentActivity() {
             "com.example.campernavigator.extra.NAVIGATION_UI_MODE"
 
         const val MODE_HOME = "HOME"
-        const val MODE_FOREGROUND = "FOREGROUND"
+        const val MODE_FULLSCREEN = "FULLSCREEN"
     }
     
     private var mapViewModel: MapViewModel? = null
@@ -83,13 +83,13 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                MODE_FOREGROUND -> {
+                MODE_FULLSCREEN -> {
                     FileLogger.log(
-                        "MainActivity: navigation UI mode -> FOREGROUND"
+                        "MainActivity: navigation UI mode -> FULLSCREEN"
                     )
 
                     mapViewModel?.setNavigationUiMode(
-                        NavigationUiMode.FOREGROUND
+                        NavigationUiMode.FULLSCREEN
                     )
                 }
             }
@@ -155,13 +155,13 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
-            MODE_FOREGROUND -> {
+            MODE_FULLSCREEN -> {
                 FileLogger.log(
-                    "MainActivity: onNewIntent -> FOREGROUND"
+                    "MainActivity: onNewIntent -> FULLSCREEN"
                 )
 
                 mapViewModel?.setNavigationUiMode(
-                    NavigationUiMode.FOREGROUND
+                    NavigationUiMode.FULLSCREEN
                 )
             }
         }
