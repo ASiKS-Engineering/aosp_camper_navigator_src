@@ -35,6 +35,7 @@ import com.example.campernavigator.data.SearchRepository
 import com.example.campernavigator.data.TrafficRepository
 import com.example.campernavigator.service.FakeRoutingService
 import com.example.campernavigator.service.LocationProviderFactory
+import com.example.campernavigator.service.VoiceService
 import com.example.campernavigator.ui.map.MapScreen
 import com.example.campernavigator.ui.map.MapViewModel
 import com.example.campernavigator.ui.map.NavigationUiMode
