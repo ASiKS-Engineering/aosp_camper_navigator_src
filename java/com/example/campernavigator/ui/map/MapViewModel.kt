@@ -56,7 +56,7 @@ import org.json.JSONObject
 
 enum class NavigationUiMode {
     HOME,
-    FOREGROUND
+    FULLSCREEN
 }
 
 data class MapUiState(
