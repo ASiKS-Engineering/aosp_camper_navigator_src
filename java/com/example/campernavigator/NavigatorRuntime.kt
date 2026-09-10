@@ -17,6 +17,7 @@ import org.maplibre.android.module.http.HttpRequestUtil
 object NavigatorRuntime {
     const val PREFS_NAME = "navigation_state"
     const val KEY_ACTIVE_REGION = "active_region_id"
+    const val KEY_ACTIVE_VEHICLE = "active_vehicle_id"
     private const val KEY_ROUTING_MODE = "routing_mode"
 
     @Volatile
@@ -114,10 +115,11 @@ object NavigatorRuntime {
         }
 
         val routingMode = getSavedRoutingMode(requireContext())
+        val activeVehicleId = getSavedActiveVehicleId(requireContext())
         try {
-            sharedGraphHopperEngine.init(regionId, routingMode)
+            sharedGraphHopperEngine.init(regionId, routingMode, activeVehicleId)
             FileLogger.log(
-                "NavigatorRuntime: Prewarm completed for region $regionId in mode $routingMode ($reason)"
+                "NavigatorRuntime: Prewarm completed for region $regionId in mode $routingMode vehicle=$activeVehicleId ($reason)"
             )
         } catch (e: Exception) {
             FileLogger.log(
@@ -153,6 +155,12 @@ object NavigatorRuntime {
         } catch (_: IllegalArgumentException) {
             RoutingMode.FASTEST
         }
+    }
+
+    private fun getSavedActiveVehicleId(context: Context): String? {
+        initialize(context)
+        return prefs(requireContext()).getString(KEY_ACTIVE_VEHICLE, null)
+            ?.takeIf { it.isNotBlank() }
     }
 
     private fun regionExists(context: Context, regionId: String): Boolean {

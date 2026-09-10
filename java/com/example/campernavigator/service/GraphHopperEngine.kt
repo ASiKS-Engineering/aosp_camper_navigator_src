@@ -35,7 +35,14 @@ class GraphHopperEngine(val context: Context) {
     private var hopper: GraphHopper? = null
     private var routingService: RoutingService? = null
     private var currentRegionId: String? = null
+    private var currentConfigKey: EngineConfigKey? = null
     private val initMutex = Mutex()
+
+    private data class EngineConfigKey(
+        val regionId: String,
+        val routingMode: RoutingMode,
+        val vehicleId: String?
+    )
 
     private class AndroidFastestWeighting(
         private val accessEnc: BooleanEncodedValue?,
@@ -109,7 +116,14 @@ class GraphHopperEngine(val context: Context) {
     }
 
     suspend fun init(regionId: String, routingMode: RoutingMode = RoutingMode.FASTEST, vehicleId: String? = null): RoutingService = initMutex.withLock {
-        FileLogger.log("GraphHopperEngine.init started for region $regionId")
+        val requestedConfig = EngineConfigKey(
+            regionId = regionId,
+            routingMode = routingMode,
+            vehicleId = vehicleId?.takeIf { it.isNotBlank() }
+        )
+        FileLogger.log(
+            "GraphHopperEngine.init started for region $regionId mode=$routingMode vehicle=${requestedConfig.vehicleId}"
+        )
         withContext(Dispatchers.IO) {
             // Wir suchen an beiden Orten: Intern (Pi 5 Favorit) und Extern
             val internalRoot = File(context.filesDir, "routing/$regionId")
@@ -126,14 +140,20 @@ class GraphHopperEngine(val context: Context) {
             var vehicleConfig: VehicleConfigData? = null
             var customModel: CustomModelData? = null
 
-            if (vehicleId != null) {
+            if (requestedConfig.vehicleId != null) {
                 try {
-                    val vFile = File(File(context.getExternalFilesDir(null), "vehicles/$vehicleId"), "vehicles").listFiles { f -> f.extension == "json" }?.firstOrNull()
+                    val vFile = File(
+                        File(context.getExternalFilesDir(null), "vehicles/${requestedConfig.vehicleId}"),
+                        "vehicles"
+                    ).listFiles { f -> f.extension == "json" }?.firstOrNull()
                     if (vFile != null) {
                         val json = JSONObject(JsonUtil.sanitizeJson(vFile.readText())).optJSONObject("vehicle")
                         if (json != null) vehicleConfig = VehicleConfigData(height = json.optDouble("height", 3.22), width = json.optDouble("width", 2.35), weight = json.optDouble("weight", 4.4), length = json.optDouble("length", 11.7))
                     }
-                    val sFile = File(File(context.getExternalFilesDir(null), "vehicles/$vehicleId"), "settings/routing.json")
+                    val sFile = File(
+                        File(context.getExternalFilesDir(null), "vehicles/${requestedConfig.vehicleId}"),
+                        "settings/routing.json"
+                    )
                     if (sFile.exists()) {
                         val json = JSONObject(JsonUtil.sanitizeJson(sFile.readText()))
                         customModel = CustomModelData(distanceInfluence = json.optDouble("distance_influence", 70.0))
@@ -141,7 +161,7 @@ class GraphHopperEngine(val context: Context) {
                 } catch (e: Exception) {}
             }
 
-            if (currentRegionId == regionId && routingService != null) return@withContext routingService!!
+            if (currentConfigKey == requestedConfig && routingService != null) return@withContext routingService!!
             closeCurrentHopper()
             val ghLocationFile = findGraphCacheDir(regionDir) ?: throw Exception("Routing-Daten nicht gefunden.")
             File(ghLocationFile, "gh.lock").delete()
@@ -216,6 +236,7 @@ class GraphHopperEngine(val context: Context) {
 
             hopper = activeHopper
             currentRegionId = regionId
+            currentConfigKey = requestedConfig
             routingService = GraphHopperRoutingService(activeHopper)
             routingService!!
         }
@@ -265,7 +286,7 @@ class GraphHopperEngine(val context: Context) {
     }
 
     suspend fun close() = initMutex.withLock { withContext(Dispatchers.IO) { closeCurrentHopper() } }
-    private fun closeCurrentHopper() { try { hopper?.close() } catch (e: Exception) { }; hopper = null; routingService = null; currentRegionId = null }
+    private fun closeCurrentHopper() { try { hopper?.close() } catch (e: Exception) { }; hopper = null; routingService = null; currentRegionId = null; currentConfigKey = null }
     private fun findGraphCacheDir(dir: File): File? {
         if (!dir.exists()) return null
         if (File(dir, "nodes").exists() && File(dir, "edges").exists()) return dir

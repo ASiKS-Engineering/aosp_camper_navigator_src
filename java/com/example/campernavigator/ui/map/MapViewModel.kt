@@ -184,7 +184,7 @@ class MapViewModel(
     private val KEY_MPH = "is_mph"
     private val KEY_MAP_MODE = "map_mode"
     private val KEY_ROUTING_MODE = "routing_mode"
-    private val KEY_ACTIVE_VEHICLE = "active_vehicle_id"
+    private val KEY_ACTIVE_VEHICLE = NavigatorRuntime.KEY_ACTIVE_VEHICLE
     private val KEY_ACTIVE_REGION = NavigatorRuntime.KEY_ACTIVE_REGION
 
     private var isLocationTrackingActive = false
@@ -419,7 +419,11 @@ class MapViewModel(
     fun toggleFavorite(result: SearchResult) { }
     fun togglePowerSaveMode() { val n = !_uiState.value.isPowerSaveModeEnabled; _uiState.update { it.copy(isPowerSaveModeEnabled = n) }; saveSetting(KEY_POWER_SAVE, n) }
     fun toggleDemoMode() { _uiState.update { it.copy(isDemoMode = !_uiState.value.isDemoMode) } }
-    fun setRoutingMode(mode: RoutingMode) { _uiState.update { it.copy(routingMode = mode) }; saveSetting(KEY_ROUTING_MODE, mode.name) }
+    fun setRoutingMode(mode: RoutingMode) {
+        _uiState.update { it.copy(routingMode = mode) }
+        saveSetting(KEY_ROUTING_MODE, mode.name)
+        reloadActiveRegionIfNeeded()
+    }
     fun togglePois() { val n = !_uiState.value.showPois; _uiState.update { it.copy(showPois = n) }; saveSetting(KEY_POIS, n) }
     fun toggleBuildings() { val n = !_uiState.value.showBuildings; _uiState.update { it.copy(showBuildings = n) }; saveSetting(KEY_BUILDINGS, n) }
     fun toggleAutoZoom() { val n = !_uiState.value.isAutoZoomEnabled; _uiState.update { it.copy(isAutoZoomEnabled = n) }; saveSetting(KEY_AUTO_ZOOM, n) }
@@ -467,6 +471,7 @@ class MapViewModel(
                         _uiState.update { it.copy(selectedVehicle = profile, activeVehicleId = id) }
                         saveSetting(KEY_ACTIVE_VEHICLE, id)
                         FileLogger.log("MapViewModel: Vehicle $id loaded successfully")
+                        reloadActiveRegionIfNeeded()
                     }
                 } catch (e: Exception) {
                     FileLogger.log("MapViewModel: Error parsing vehicle file: ${e.message}", "ERROR")
@@ -526,7 +531,11 @@ class MapViewModel(
         _uiState.update { it.copy(isLoading = true, loadingMessage = "Lade Karte: $id...") }
         try {
             FileLogger.log("MapViewModel: Initializing GraphHopper for $id")
-            routingService = graphHopperEngine.init(id, _uiState.value.routingMode)
+            routingService = graphHopperEngine.init(
+                id,
+                _uiState.value.routingMode,
+                _uiState.value.activeVehicleId
+            )
             
             // MBTiles Suche (Intern & Extern)
             val internalDir = File(graphHopperEngine.context.filesDir, "routing/$id")
@@ -560,6 +569,14 @@ class MapViewModel(
                 Math.cos(Math.toRadians(p1.latitude)) * Math.cos(Math.toRadians(p2.latitude)) *
                 Math.sin(Math.toRadians(p2.longitude - p1.longitude) / 2).let { it * it }
         return r * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+    }
+
+    private fun reloadActiveRegionIfNeeded() {
+        val activeRegionId = _uiState.value.activeRegionId ?: return
+        if (isInitializingGraphHopper) {
+            return
+        }
+        loadRegion(activeRegionId)
     }
 
     override fun onCleared() {
