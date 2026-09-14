@@ -63,11 +63,17 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_NAVIGATION_UI_MODE =
             "com.example.campernavigator.extra.NAVIGATION_UI_MODE"
 
+        const val EXTRA_SHOW_MENU = "com.example.campernavigator.extra.SHOW_MENU"
+
+        private const val NAVIGATION_STATE_PREFS = "navigation_state"
+        private const val KEY_LAST_UI_MODE = "last_ui_mode"
+
         const val MODE_HOME = "HOME"
         const val MODE_FULLSCREEN = "FULLSCREEN"
     }
 
     private var mapViewModel: MapViewModel? = null
+    private var showSettingsMenu by mutableStateOf(false)
 
     private val navigationUiModeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -78,14 +84,12 @@ class MainActivity : ComponentActivity() {
             when (intent.getStringExtra(EXTRA_NAVIGATION_UI_MODE)) {
                 MODE_HOME -> {
                     FileLogger.log("MainActivity: navigation UI mode -> HOME")
-                    syncNavigatorModeWithSystem(MODE_HOME)
-                    mapViewModel?.setNavigationUiMode(NavigationUiMode.HOME)
+                    setNavigationUiMode(MODE_HOME)
                 }
 
                 MODE_FULLSCREEN -> {
                     FileLogger.log("MainActivity: navigation UI mode -> FULLSCREEN")
-                    syncNavigatorModeWithSystem(MODE_FULLSCREEN)
-                    mapViewModel?.setNavigationUiMode(NavigationUiMode.FULLSCREEN)
+                    setNavigationUiMode(MODE_FULLSCREEN)
                 }
             }
         }
@@ -106,6 +110,8 @@ class MainActivity : ComponentActivity() {
         window.colorMode = ActivityInfo.COLOR_MODE_DEFAULT
         installSplashScreen()
         super.onCreate(savedInstanceState)
+
+        applyNavigationIntent(intent)
 
         NavigatorRuntime.configureMapRuntime(applicationContext)
 
@@ -182,17 +188,17 @@ class MainActivity : ComponentActivity() {
                 )
                 mapViewModel = mapViewModelInstance
 
-                when (intent?.getStringExtra(EXTRA_NAVIGATION_UI_MODE)) {
-                    MODE_HOME -> {
-                        syncNavigatorModeWithSystem(MODE_HOME)
-                        mapViewModelInstance.setNavigationUiMode(NavigationUiMode.HOME)
+                val initialMode = intent?.getStringExtra(EXTRA_NAVIGATION_UI_MODE)
+                    ?: getSharedPreferences(NAVIGATION_STATE_PREFS, MODE_PRIVATE)
+                        .getString(KEY_LAST_UI_MODE, MODE_HOME)
+                    ?: MODE_HOME
+                mapViewModelInstance.setNavigationUiMode(
+                    if (initialMode == MODE_FULLSCREEN) {
+                        NavigationUiMode.FULLSCREEN
+                    } else {
+                        NavigationUiMode.HOME
                     }
-
-                    MODE_FULLSCREEN -> {
-                        syncNavigatorModeWithSystem(MODE_FULLSCREEN)
-                        mapViewModelInstance.setNavigationUiMode(NavigationUiMode.FULLSCREEN)
-                    }
-                }
+                )
 
                 val uiState by mapViewModelInstance.uiState.collectAsState()
                 var forceHideSplash by remember { mutableStateOf(false) }
@@ -206,6 +212,7 @@ class MainActivity : ComponentActivity() {
                     Box(modifier = Modifier.padding(innerPadding)) {
                         MapScreen(
                             viewModel = mapViewModelInstance,
+                            openSettingsMenu = showSettingsMenu,
                             modifier = Modifier.fillMaxSize()
                         )
 
@@ -222,19 +229,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
 
-        when (intent.getStringExtra(EXTRA_NAVIGATION_UI_MODE)) {
-            MODE_HOME -> {
-                FileLogger.log("MainActivity: onNewIntent -> HOME")
-                syncNavigatorModeWithSystem(MODE_HOME)
-                mapViewModel?.setNavigationUiMode(NavigationUiMode.HOME)
-            }
-
-            MODE_FULLSCREEN -> {
-                FileLogger.log("MainActivity: onNewIntent -> FULLSCREEN")
-                syncNavigatorModeWithSystem(MODE_FULLSCREEN)
-                mapViewModel?.setNavigationUiMode(NavigationUiMode.FULLSCREEN)
-            }
-        }
+        applyNavigationIntent(intent)
     }
 
     override fun onResume() {
@@ -290,11 +285,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun syncNavigatorModeWithSystem(mode: String) {
-        sendBroadcast(
-            Intent(ACTION_SET_CAMPER_NAVIGATOR_MODE)
-                .putExtra(EXTRA_CAMER_NAVIGATOR_MODE, mode)
-                .putExtra(EXTRA_APPLY_SCREEN_TRANSITION, false)
+    private fun applyNavigationIntent(intent: Intent?) {
+        showSettingsMenu = intent?.getBooleanExtra(EXTRA_SHOW_MENU, false) == true
+
+        when (intent?.getStringExtra(EXTRA_NAVIGATION_UI_MODE)) {
+            MODE_HOME -> setNavigationUiMode(MODE_HOME)
+            MODE_FULLSCREEN -> setNavigationUiMode(MODE_FULLSCREEN)
+            else -> {
+                val lastMode = getSharedPreferences(NAVIGATION_STATE_PREFS, MODE_PRIVATE)
+                    .getString(KEY_LAST_UI_MODE, MODE_HOME) ?: MODE_HOME
+                setNavigationUiMode(lastMode)
+            }
+        }
+    }
+
+    private fun setNavigationUiMode(mode: String) {
+        getSharedPreferences(NAVIGATION_STATE_PREFS, MODE_PRIVATE)
+            .edit()
+            .putString(KEY_LAST_UI_MODE, mode)
+            .apply()
+        mapViewModel?.setNavigationUiMode(
+            if (mode == MODE_FULLSCREEN) NavigationUiMode.FULLSCREEN else NavigationUiMode.HOME
         )
     }
 }

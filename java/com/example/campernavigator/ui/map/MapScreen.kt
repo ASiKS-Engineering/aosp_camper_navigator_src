@@ -177,6 +177,7 @@ import org.maplibre.geojson.Point
 @Composable
 fun MapScreen(
     viewModel: MapViewModel,
+    openSettingsMenu: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -194,6 +195,12 @@ fun MapScreen(
     var showMapClickDialog by remember { mutableStateOf<LatLng?>(null) }
     var lastInteractionTime by remember { mutableLongStateOf(0L) }
     val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(openSettingsMenu) {
+        if (openSettingsMenu) {
+            isMapManagementOpen = true
+        }
+    }
 
     // Zeit für die Statusbar-Aktualisierung
     var currentTime by remember { mutableStateOf(System.currentTimeMillis()) }
