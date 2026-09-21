@@ -41,7 +41,6 @@ import com.example.campernavigator.service.VoiceService
 import com.example.campernavigator.util.GeoUtil
 import com.example.campernavigator.util.LocalTileRegistry
 import com.example.campernavigator.util.MBTilesManager
-import com.example.campernavigator.worker.VehicleImportWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive

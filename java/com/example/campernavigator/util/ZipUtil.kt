@@ -33,11 +33,11 @@ object ZipUtil {
                     // Timeout protection: if too many entries or taking too long, abort check
                     if (entryCount > 10000) {
                         FileLogger.log("ZipUtil: Too many entries, skipping full check")
-                        return@use
+                        return@use true
                     }
                 }
                 
-                return entryCount > 0 // Valid if we found any entries
+                entryCount > 0 // Valid if we found any entries
             }
         } catch (e: ZipException) {
             FileLogger.log("ZipUtil: ZIP structure invalid - ${e.message}")
