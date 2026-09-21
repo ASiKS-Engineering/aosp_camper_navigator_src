@@ -183,7 +183,7 @@ fun MapScreen(
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
     var isMenuOpen by remember { mutableStateOf(false) }
-    var isPanelExpanded by remember { mutableStateOf(false) } // Default eingeklappt
+    var isPanelExpanded by remember { mutableStateOf(false) } // Default collapsed
     var isMapManagementOpen by remember { mutableStateOf(false) }
     var isFavoritesOpen by remember { mutableStateOf(false) }
     var isCampingSubmenuOpen by remember { mutableStateOf(false) }
@@ -202,23 +202,23 @@ fun MapScreen(
         }
     }
 
-    // Zeit für die Statusbar-Aktualisierung
+    // Time for status bar update
     var currentTime by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) {
             currentTime = System.currentTimeMillis()
-            delay(10000) // Alle 10 Sekunden aktualisieren
+            delay(10000) // Update every 10 seconds
         }
     }
 
-    // Automatisch einklappen, wenn eine Route berechnet wurde oder die Navigation startet
+    // Auto collapse when a route is calculated or navigation starts
     LaunchedEffect(uiState.currentRoute, uiState.isNavigating) {
         if (uiState.currentRoute != null || uiState.isNavigating) {
             isPanelExpanded = false
         }
     }
 
-    // Automatisch einklappen nach 5 Sekunden, wenn Navigation aktiv ist
+    // Auto collapse after 5 seconds when navigation is active
     LaunchedEffect(isPanelExpanded, uiState.isNavigating) {
         if (isPanelExpanded && uiState.isNavigating) {
             delay(5000)
@@ -241,7 +241,7 @@ fun MapScreen(
         if (uiState.mapMode == com.example.campernavigator.ui.map.MapMode.AUTO && lightSensor != null) {
             sensorManager.registerListener(listener, lightSensor, android.hardware.SensorManager.SENSOR_DELAY_UI)
         } else if (uiState.mapMode == com.example.campernavigator.ui.map.MapMode.AUTO) {
-            // AAOS / Head Unit Fallback: Wenn kein Lichtsensor da ist, Standard-Tagmodus nutzen
+            // AAOS / Head Unit Fallback: Use default day mode if no light sensor available
             viewModel.updateNightMode(false)
         } else {
             viewModel.updateNightMode(uiState.mapMode == com.example.campernavigator.ui.map.MapMode.NIGHT)
@@ -255,8 +255,8 @@ fun MapScreen(
     val mapView = remember(context) {
         FileLogger.log("MapScreen: Creating MapView instance")
         val view = MapView(context)
-        // WICHTIG: onCreate muss nur einmal aufgerufen werden. 
-        // Falls die Activity verschoben wird, reicht onStart/onResume.
+        // IMPORTANT: onCreate must only be called once.
+        // If Activity is moved, onStart/onResume is sufficient.
         view.onCreate(null)
         FileLogger.log("MapScreen: MapView.onCreate finished")
         view
@@ -267,13 +267,13 @@ fun MapScreen(
     var isSystemMovingCamera by remember { mutableStateOf(false) }
     var styleUpdateTrigger by remember { mutableStateOf(0) }
     
-    // Konstanten für Route-Layer
+    // Constants for route layers
     val FULL_ROUTE_SOURCE_ID = "full-route-source"
     val FULL_ROUTE_LAYER_ID = "full-route-layer"
     val TRAVELED_PATH_SOURCE_ID = "traveled-path-source"
     val TRAVELED_PATH_LAYER_ID = "traveled-path-layer"
     
-    // Custom Location Engine für Map Matching
+    // Custom location engine for map matching
     class SnappedLocationEngine : org.maplibre.android.location.engine.LocationEngine {
         private var lastLoc: android.location.Location? = null
         private val callbacks = mutableSetOf<org.maplibre.android.location.engine.LocationEngineCallback<org.maplibre.android.location.engine.LocationEngineResult>>()
@@ -320,7 +320,7 @@ fun MapScreen(
                 PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
             )
             
-            // Wenn möglich, unter das Fahrzeug legen
+            // Place under vehicle if possible
             if (style.getLayer(locationShadowLayer) != null) {
                 style.addLayerBelow(layer, locationShadowLayer)
             } else {
@@ -346,9 +346,9 @@ fun MapScreen(
     fun buildLocationOptions(topPadding: Int): org.maplibre.android.location.LocationComponentOptions {
         return org.maplibre.android.location.LocationComponentOptions.builder(context)
             .padding(intArrayOf(0, topPadding, 0, 0))
-            .accuracyAlpha(0f) // Grauen Kreis ausblenden
-            .trackingAnimationDurationMultiplier(1.0f) // FLÜSSIGES GLEITEN AKTIVIEREN
-            .maxZoomIconScale(1.2f) // Camper-Look wiederherstellen
+            .accuracyAlpha(0f) // Hide gray circle
+            .trackingAnimationDurationMultiplier(1.0f) // ENABLE SMOOTH GLIDING
+            .maxZoomIconScale(1.2f) // Restore camper look
             .minZoomIconScale(1.2f)
             .compassAnimationEnabled(false)
             .build()
@@ -393,7 +393,7 @@ fun MapScreen(
         
         locationComponent.activateLocationComponent(options)
         locationComponent.isLocationComponentEnabled = true
-        // Sicherstellen, dass die Kamera-Modi nach Stilwechsel korrekt bleiben
+        // Ensure camera modes remain correct after style change
         locationComponent.cameraMode = if (uiState.isInitialZoomPerformed) CameraMode.TRACKING else CameraMode.NONE
         locationComponent.renderMode = RenderMode.GPS
 
@@ -420,7 +420,7 @@ fun MapScreen(
         val w = mapView.width
         if (h <= 0) return
         
-        // Im Overview-Modus (Routenvorschau) nutzen wir den vollen Schirm
+        // In overview mode (route preview) we use full screen
         if (isOverview) {
             map.setPadding(0, 0, 0, 0)
             try {
@@ -442,6 +442,7 @@ fun MapScreen(
                 val topPadding =
                     (h * 0.20f).roundToInt()
 
+                // Update map padding for FULLSCREEN mode while keeping visibility
                 map.setPadding(
                     leftPadding,
                     topPadding,
@@ -455,6 +456,9 @@ fun MapScreen(
                     )
                 } catch (e: Exception) {
                 }
+
+                // Notify ViewModel that launcher is coming into foreground
+                FileLogger.log("MapScreen: HOME mode - Map going to background")
 
                 return
             }
@@ -474,7 +478,10 @@ fun MapScreen(
                  } catch (e: Exception) {
                        // Ignore while map/location component is initializing.
                  }
-             }
+                
+                // Notify ViewModel that map is in full foreground
+                FileLogger.log("MapScreen: FULLSCREEN mode - Map in full foreground")
+            }
         }
     }
 
@@ -493,8 +500,8 @@ fun MapScreen(
         map.cancelTransitions()
         isSystemMovingCamera = true
         
-        // Einheitliche Logik für den Rücksprung zum CCP (mit/ohne Navigation)
-        // Wir nutzen setCameraMode für eine perfekte Synchronität zwischen Kamera und Icon.
+        // Unified logic for returning to CCP (with/without navigation)
+        // We use setCameraMode for perfect synchronization between camera and icon.
         val targetMode = if (uiState.isNorthUp) {
             CameraMode.TRACKING 
         } else {
@@ -509,7 +516,7 @@ fun MapScreen(
         try {
             map.locationComponent.setCameraMode(
                 targetMode,
-                1000, // Dauer des Übergangs
+                1000, // Duration of transition
                 targetZoom,
                 targetBearing,
                 targetTilt,
@@ -538,7 +545,7 @@ fun MapScreen(
         val window = activity.window
 
         if (uiState.isNavigating) {
-            // 1. Bildschirm dauerhaft an lassen während der Navigation
+            // 1. Keep screen on permanently during navigation
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
             // 2. Dimmen bei Energiesparmodus
@@ -547,7 +554,7 @@ fun MapScreen(
                 val isRecentlyInteracted = System.currentTimeMillis() - lastInteractionTime < 5000 // 5s Puffer
                 
                 if (dist > 500.0 && !isRecentlyInteracted) {
-                    // Weit weg vom nächsten Manöver: Abdunkeln (10% Brightness)
+                    // Far from next turn: dim screen (10% brightness)
                     val lp = window.attributes
                     lp.screenBrightness = 0.1f
                     window.attributes = lp
@@ -566,7 +573,7 @@ fun MapScreen(
                 }
             }
         } else {
-            // Navigation beendet: Flags und Brightness zurücksetzen
+            // Navigation finished: reset flags and brightness
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             val lp = window.attributes
             if (lp.screenBrightness != WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE) {
@@ -576,7 +583,7 @@ fun MapScreen(
         }
     }
 
-    // Kamera-Zustände für Übergänge
+    // Camera states for transitions
     var wasNavigating by remember { mutableStateOf(false) }
     var lastZoomedRoute by remember { mutableStateOf<com.example.campernavigator.service.Route?>(null) }
     var isWaitingForFirstFixAfterStop by remember { mutableStateOf(false) }
@@ -601,7 +608,7 @@ fun MapScreen(
         AndroidView(
             factory = {
                 mapView.apply {
-                    // Automatisches Padding-Update bei Layout-Änderungen
+                    // Auto update padding on layout changes
                     addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
                          updateMapPadding()
                     }
@@ -610,7 +617,7 @@ fun MapScreen(
                         mapInstance = map
                         
                         // Zoom-Limits festlegen
-                        map.setMaxZoomPreference(19.0) // Verhindert Zoom näher als ca. 25m Scale (vorher 20.0)
+                        map.setMaxZoomPreference(19.0) // Prevents zoom closer than approx 25m scale (was 20.0)
                         map.setMinZoomPreference(2.0)  // Verhindert zu weites Auszoomen
                         
                         fun loadStyle() {
@@ -634,7 +641,7 @@ fun MapScreen(
                                 viewModel.setMapReady(true)
                             }
                             
-                            // Überwachung: Wenn nach 10 Sek. kein Stil da ist, Log schreiben
+                            // Monitor: If no style after 10 sec, write log
                             Handler(Looper.getMainLooper()).postDelayed({
                                 if (map.style == null) {
                                     FileLogger.log("MapScreen: WARNING - Style still not loaded after 10s. Internet issues?", "ERROR")
@@ -681,7 +688,7 @@ fun MapScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.End
                 ) {
-                    // Ankunftszeit (ETA) während der Navigation
+                    // Arrival time (ETA) during navigation
                     if (uiState.isNavigating && uiState.remainingTime != null) {
                         val arrivalTime = currentTime + uiState.remainingTime!!
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -765,7 +772,7 @@ fun MapScreen(
                 
                 Surface(
                     modifier = Modifier
-                        .padding(start = 8.dp, top = 56.dp, bottom = 16.dp) // Von ganz oben bis zur Unterkante Menü
+                        .padding(start = 8.dp, top = 56.dp, bottom = 16.dp) // From top to bottom edge of menu
                         .width(32.dp)
                         .align(Alignment.TopStart),
                     shape = RoundedCornerShape(16.dp),
@@ -1010,7 +1017,7 @@ fun MapScreen(
             // --- SPEED INDICATOR (Top Left) ---
             Column(
                 modifier = Modifier
-                    .padding(top = 56.dp, start = 48.dp) // Ein Stück nach rechts gerückt (Beginn Menü)
+                    .padding(top = 56.dp, start = 48.dp) // Shifted slightly to the right (menu start)
                     .align(Alignment.TopStart)
             ) {
                 val speedValue = when {
@@ -1123,7 +1130,7 @@ fun MapScreen(
                                 }
                             }
                         } else {
-                            // Normales Speed Limit (Weißes Schild, Roter Rand, Rund)
+                            // Standard speed limit (white sign, red border, round)
                             Surface(
                                 modifier = Modifier.size(64.dp),
                                 shape = androidx.compose.foundation.shape.CircleShape,
@@ -1995,6 +2002,7 @@ fun MapScreen(
                                     onLoadVehicle = { viewModel.loadVehicle(it) }
                                 )
                             }
+                            Spacer(Modifier.height(24.dp))
                         }
 
                         if (uiState.supportedEncodedValues.isNotEmpty()) {
@@ -2119,7 +2127,7 @@ fun MapScreen(
                                         viewModel.setHomeAddress(result)
                                         isSettingHome = false
                                         isSearchOverlayVisible = false
-                                        isMapManagementOpen = true // Zurück zu den Einstellungen
+                                        isMapManagementOpen = true // Back to settings
                                     } else {
                                         viewModel.selectSearchResult(result)
                                         isSearchOverlayVisible = false
@@ -2144,37 +2152,37 @@ fun MapScreen(
         }
     }
 
-    // Automatischer Zoom & Tilt während der Fahrt (BMW Style Floating Camera)
+    // Auto zoom & tilt during driving (OEM Style Floating Camera)
     LaunchedEffect(uiState.suggestedZoom, uiState.suggestedTilt, uiState.isNavigating, uiState.isNorthUp) {
         val map = mapInstance ?: return@LaunchedEffect
-        // Hard-Limit auf 19.0 (ca. 25m) auch im UI-Layer klammern
+        // Hard-limit to 19.0 (approx 25m) also enforce in UI-Layer
         var zoom = (uiState.suggestedZoom ?: return@LaunchedEffect).coerceAtMost(19.0)
         
-        // ZWINGEND: Tilt auf 0.0 setzen, wenn North-Up aktiv ist
+        // MANDATORY: Set tilt to 0.0 when North-Up is active
         val tilt = if (uiState.isNorthUp) 0.0 else (uiState.suggestedTilt ?: 45.0)
         
-        // Zoom auf 0.1er Schritte quantisieren für stabilere "Schritte"
+        // Quantize zoom to 0.1 steps for stable "steps"
         zoom = Math.round(zoom * 10.0) / 10.0
         
-        // Nur zoomen, wenn Tracking aktiv ist UND wir nicht gerade manuell schieben
+        // Only zoom when tracking is active AND we're not manually moving camera
         if (isCameraTracking && !isSystemMovingCamera) {
             if (uiState.isNavigating) {
-                // Striktes Tracking: Wir nutzen die internen Methoden der LocationComponent.
-                // Dadurch bleibt der CCP exakt an seiner Bildschirmposition fixiert.
-                // Wir erzwingen hier erneut den korrekten Modus, falls er verloren ging.
+                // Strict tracking: We use internal LocationComponent methods.
+                // This keeps the CCP exactly at its screen position.
+                // We enforce the correct mode here, in case it was lost.
                 val targetMode = if (uiState.isNorthUp) CameraMode.TRACKING else CameraMode.TRACKING_GPS
                 if (map.locationComponent.cameraMode != targetMode) {
                     map.locationComponent.cameraMode = targetMode
                 }
                 
-                // BMW Style: Kürzere Animationen (500ms) verhindern Stau bei schnellen Änderungen
+                // OEM Style: Shorter animations (500ms) prevent stalls on rapid changes
                 map.locationComponent.zoomWhileTracking(zoom, 500)
                 map.locationComponent.tiltWhileTracking(tilt, 500)
             } else {
                 isSystemMovingCamera = true
                 map.animateCamera(
                     org.maplibre.android.camera.CameraUpdateFactory.zoomTo(zoom),
-                    1500, // Von 3000ms auf 1500ms reduziert für reaktivere Verfolgung
+                    1500, // Reduced from 3000ms for more responsive tracking
                     object : MapLibreMap.CancelableCallback {
                         override fun onFinish() { isSystemMovingCamera = false }
                         override fun onCancel() { isSystemMovingCamera = false }
@@ -2184,7 +2192,7 @@ fun MapScreen(
         }
     }
 
-    // Kamera auf Standort zoomen, sobald dieser verfügbar ist (beim Start)
+    // Zoom camera to location once available (on startup)
     LaunchedEffect(mapInstance, hasInitialLocationZoom, uiState.isNavigating, uiState.rawLocation, mapView.height, uiState.isMapReady) {
         val map = mapInstance ?: return@LaunchedEffect
         if (!uiState.isMapReady || hasInitialLocationZoom || uiState.isNavigating || mapView.height <= 0) {
@@ -2197,7 +2205,7 @@ fun MapScreen(
             isSystemMovingCamera = true
             viewModel.setCameraTracking(true) // Force tracking on first fix
             
-            // Padding sicherstellen, damit CCP im unteren Drittel landet
+// Padding ensure CCP lands in lower third
             updateMapPadding()
             
             map.animateCamera(
@@ -2262,18 +2270,18 @@ fun MapScreen(
     LaunchedEffect(uiState.currentRoute, uiState.startPoint, uiState.destinationPoint, uiState.isNavigating, styleUpdateTrigger, mapInstance) {
         val map = mapInstance ?: return@LaunchedEffect
         val style = map.style ?: return@LaunchedEffect
-        // HINWEIS: Wir prüfen NICHT mehr auf style.isFullyLoaded, da lokale Stile 
-        // oft länger brauchen um diesen Status zu melden, aber trotzdem schon zeichnen können.
+        // Note: We no longer check style.isFullyLoaded since local styles
+        // often take longer to report this status, but can still render anyway.
 
-        // Wir leeren die Karte nur für Marker und Annotations
+        // We clear the map only for markers and annotations
         map.clear()
         
         uiState.waypoints.forEachIndexed { index, point ->
-            map.addMarker(MarkerOptions().position(point).title("Zwischenziel ${index + 1}"))
+            map.addMarker(MarkerOptions().position(point).title("Waypoint ${index + 1}"))
         }
-        uiState.destinationPoint?.let { map.addMarker(MarkerOptions().position(it).title("Ziel")) }
+        uiState.destinationPoint?.let { map.addMarker(MarkerOptions().position(it).title("Destination")) }
 
-        // Verkehrsmeldungen anzeigen
+        // Display traffic events
         uiState.trafficEvents.forEach { event ->
             map.addMarker(
                 MarkerOptions()
@@ -2284,11 +2292,11 @@ fun MapScreen(
         }
 
         uiState.currentRoute?.let { route ->
-            android.util.Log.d("MapScreen", "Zeichne Route mit ${route.points.size} Punkten. Start: ${route.points.firstOrNull()?.latitude},${route.points.firstOrNull()?.longitude}")
-            // Die gesamte Route im GeoJsonSource aktualisieren
+            android.util.Log.d("MapScreen", "Drawing route with ${route.points.size} points. Start: ${route.points.firstOrNull()?.latitude},${route.points.firstOrNull()?.longitude}")
+            // Update full route in GeoJsonSource
             var source = style.getSourceAs<GeoJsonSource>(FULL_ROUTE_SOURCE_ID)
             if (source == null) {
-                android.util.Log.w("MapScreen", "Route-Source '$FULL_ROUTE_SOURCE_ID' nicht gefunden! Initialisiere Layer neu...")
+                android.util.Log.w("MapScreen", "Route source '$FULL_ROUTE_SOURCE_ID' not found! Reinitializing layers...")
                 setupRouteLayers(style)
                 source = style.getSourceAs<GeoJsonSource>(FULL_ROUTE_SOURCE_ID)
             }
@@ -2296,19 +2304,19 @@ fun MapScreen(
             if (source != null) {
                 val points = route.points.map { Point.fromLngLat(it.longitude, it.latitude) }
                 source.setGeoJson(FeatureCollection.fromFeature(Feature.fromGeometry(LineString.fromLngLats(points))))
-                android.util.Log.i("MapScreen", "GeoJsonSource erfolgreich aktualisiert.")
+                android.util.Log.i("MapScreen", "GeoJsonSource successfully updated.")
             } else {
-                android.util.Log.e("MapScreen", "KRITISCH: GeoJsonSource konnte nicht erstellt werden.")
+                android.util.Log.e("MapScreen", "CRITICAL: GeoJsonSource could not be created.")
             }
 
-            // Nur zoomen, wenn wir NICHT navigieren, damit die Navigation die Kamera steuern kann
+            // Only zoom when we're NOT navigating - let navigation control camera
             if (route.points.isNotEmpty() && !uiState.isNavigating) {
-                // Kamera-Zoom wird nun über die ZENTRALE LOGIK gesteuert, um Konflikte zu vermeiden.
-                android.util.Log.d("MapScreen", "Route gezeichnet. Kamera-Handover an Zentrale Logik.")
+                // Camera zoom is now controlled via CENTRAL LOGIC to avoid conflicts.
+                android.util.Log.d("MapScreen", "Route drawn. Camera handover to central logic.")
             }
         } ?: run {
-            android.util.Log.d("MapScreen", "Keine Route vorhanden, lösche Overlays.")
-            // Route löschen
+            android.util.Log.d("MapScreen", "No route present, clearing overlays.")
+            // Clear route
             style.getSourceAs<GeoJsonSource>(FULL_ROUTE_SOURCE_ID)?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
             style.getSourceAs<GeoJsonSource>(TRAVELED_PATH_SOURCE_ID)?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
         }
@@ -2325,16 +2333,16 @@ fun MapScreen(
             return@LaunchedEffect
         }
 
-        // Falls wir gerade keine Route-Projektion haben (off-route), lassen wir die Linie 
-        // am letzten bekannten Punkt stehen, um visuelle Sprünge zu vermeiden.
+        // If we have no route projection (off-route), leave line at last known point
+        // to avoid visual jumps.
         val projection = uiState.routeProjection ?: return@LaunchedEffect
 
         uiState.currentRoute?.let { route ->
             val routePoints = route.points
             val source = style.getSourceAs<GeoJsonSource>(TRAVELED_PATH_SOURCE_ID) ?: return@LaunchedEffect
 
-            // Puffer-Logik: Wir enden 5m hinter dem CCP, um Rendering-Lags zu maskieren.
-            // Dies verhindert, dass die graue Linie jemals "vor" die Fahrzeugnase ragt.
+            // Buffer logic: We end 5m behind CCP to mask rendering lags.
+            // This prevents the gray line from ever appearing "in front" of vehicle nose.
             val bufferMeters = 5.0
             var remaining = bufferMeters
             var lastPos = projection
@@ -2379,7 +2387,7 @@ fun MapScreen(
         }
     }
 
-    // ZENTRALE LOGIK: Kamera-Nachführung & Modus-Wechsel (Navigation, Übersicht, Freies Fahren)
+    // CENTRAL LOGIC: Camera tracking & mode switching (navigation, overview, free driving)
     LaunchedEffect(uiState.isNavigating, uiState.isNorthUp, uiState.currentRoute, mapInstance) {
         val map = mapInstance ?: return@LaunchedEffect
         val style = map.style
@@ -2390,22 +2398,22 @@ fun MapScreen(
 
         try {
             if (isNavigating) {
-                // FALL 1: Zielführung startet oder ist aktiv
+                // CASE 1: Guidance starts or is active
                 if (!wasNavigating) {
-                    android.util.Log.d("MapScreen", "Navigation gestartet -> Reset Tracking")
+                    android.util.Log.d("MapScreen", "Navigation started -> Reset tracking")
                     resetCameraTracking()
-                    lastZoomedRoute = null // Reset, damit wir beim nächsten Mal wieder zoomen
+                    lastZoomedRoute = null // Reset so we zoom again next time
                 }
             } else if (route != null) {
-                // FALL 2: Routenübersicht (Vorschau)
-                // Wir führen den Zoom nur aus, wenn die Route NEU ist oder wir gerade aus der Nav kommen.
-                // Wir prüfen zusätzlich auf Distanz-Änderung, falls die Route nur minimal korrigiert wurde.
+                // CASE 2: Route overview (route preview)
+                // We only perform zoom if route is NEW or we just came from navigation.
+                // We also check distance change if route was only slightly corrected.
                 val isNewRoute = route != lastZoomedRoute || route.distance != lastZoomedRoute?.distance
                 
                 if (isNewRoute || wasNavigating) {
-                    android.util.Log.d("MapScreen", "Routenübersicht aktiv (New: $isNewRoute, WasNav: $wasNavigating) -> Zoom")
+                    android.util.Log.d("MapScreen", "Route overview active (New: $isNewRoute, WasNav: $wasNavigating) -> Zoom")
                     
-                    // ZWINGEND: Erst mal alle Animationen stoppen
+                    // MANDATORY: First stop all animations
                     map.cancelTransitions()
                     map.locationComponent.cameraMode = CameraMode.NONE
                     viewModel.setCameraTracking(false)
@@ -2416,12 +2424,12 @@ fun MapScreen(
                     try {
                         isSystemMovingCamera = true
                         
-                        // Dynamisches Prozent-Padding (BMW Style: Zentrierung im freien Bereich)
+                        // Dynamic percent padding (OEM Style: centering in free area)
                         val w = mapView.width.coerceAtLeast(100)
                         val h = mapView.height.coerceAtLeast(100)
                         
-                        val padLeft = (w * 0.15).toInt()  // 15% Platz für das Menü
-                        val padRight = (w * 0.42).toInt() // 42% Platz für die Infokarte (großzügiger)
+                        val padLeft = (w * 0.15).toInt()  // 15% space for menu
+                        val padRight = (w * 0.42).toInt() // 42% space for info card (generous)
                         val padTop = (h * 0.15).toInt()   
                         val padBottom = (h * 0.15).toInt() 
 
@@ -2449,7 +2457,7 @@ fun MapScreen(
                 }
             } else {
                 // FALL 3: Freies Fahren (keine Route, keine Navigation)
-                // Wenn wir gerade eine Navigation oder eine Übersicht beendet haben, springen wir zurück.
+                // If we just finished navigation or overview, jump back.
                 val hadRoute = lastZoomedRoute != null
                 if (wasNavigating || hadRoute) {
                     android.util.Log.d("MapScreen", "Nav/Route beendet -> Rücksprung zum GPS")
@@ -2572,7 +2580,7 @@ fun MapScreen(
                 Lifecycle.Event.ON_START -> mapView.onStart()
                 Lifecycle.Event.ON_RESUME -> {
                     mapView.onResume()
-                    // Beim Fortsetzen der App prüfen wir, ob wir das Tracking wieder aktivieren müssen
+                    // On app resume, check if we need to reactivate tracking
                     // WICHTIG: Nur wenn die Karte wirklich bereit ist (LocationComponent aktiviert)
                     if (uiState.isCameraTracking && !uiState.isNavigating && uiState.currentRoute == null && uiState.isMapReady) {
                         try {
@@ -2664,7 +2672,7 @@ fun ScaleBar(map: org.maplibre.android.maps.MapLibreMap, modifier: Modifier = Mo
                     }
                 }
             } catch (e: Exception) {
-                // Falls Karte gerade zerstört wird
+                // If map is being destroyed
                 break
             }
             delay(500)
@@ -2771,11 +2779,13 @@ fun MapManagementSection(
                 }
             }
             LinearProgressIndicator(
+                progress = progress / 100f,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
             )
         } else if (state is DownloadState.Cancelling) {
             Text("Import wird abgebrochen...", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             LinearProgressIndicator(
+                progress = 0.3f,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                 color = MaterialTheme.colorScheme.error
             )
@@ -2889,6 +2899,7 @@ fun VehicleManagementSection(
                 Text("$progress%", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
             }
             LinearProgressIndicator(
+                progress = progress / 100f,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
             )
         } else if (state is DownloadState.Error) {

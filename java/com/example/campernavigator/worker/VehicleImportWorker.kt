@@ -71,7 +71,7 @@ class VehicleImportWorker(
         return@withContext try {
             vehiclesBaseDir.mkdirs()
             
-            // 2. PRÜFE OB ZIP SCHON IM CACHE (RESUME)
+            // 2. CHECK IF ZIP ALREADY IN CACHE (RESUME)
             var isCopyNeeded = true
             if (tempZip.exists() && tempZip.length() > 1000) {
                 if (ZipUtil.checkIntegrity(tempZip)) {
@@ -82,30 +82,58 @@ class VehicleImportWorker(
                 }
             }
 
-            // 3. GEDROSSELTES KOPIEREN (0-30%)
+            // 3. ADAPTIVE KOPIEREN (0-30%) mit besserer Fehlerbehandlung
             if (isCopyNeeded) {
-                val pfd: ParcelFileDescriptor? = applicationContext.contentResolver.openFileDescriptor(uri, "r")
-                if (pfd != null) {
-                    val totalSize = pfd.statSize
-                    FileInputStream(pfd.fileDescriptor).use { fis ->
-                        val sourceChannel = fis.channel
-                        FileOutputStream(tempZip).use { fos ->
-                            val destChannel = fos.channel
-                            var position = 0L
-                            while (position < totalSize) {
-                                val transferred = destChannel.transferFrom(sourceChannel, position, 8 * 1024 * 1024L)
-                                if (transferred <= 0) break
-                                position += transferred
+                var pfd: ParcelFileDescriptor? = null
+                try {
+                    pfd = applicationContext.contentResolver.openFileDescriptor(uri, "r")
+                    if (pfd != null) {
+                        val totalSize = pfd.statSize
+                        var lastProgressTime = System.currentTimeMillis()
+                        
+                        FileInputStream(pfd.fileDescriptor).use { fis ->
+                            val sourceChannel = fis.channel
+                            FileOutputStream(tempZip).use { fos ->
+                                val destChannel = fos.channel
+                                var position = 0L
+                                var syncCounter = 0L
                                 
-                                if (totalSize > 0) {
-                                    setProgressAsync(workDataOf(KEY_PROGRESS to (position * 30 / totalSize).toInt()))
+                                while (position < totalSize) {
+                                    // Smaller chunks for stability: 4MB instead of 8MB
+                                    val chunkSize = 4 * 1024 * 1024L
+                                    val transferred = destChannel.transferFrom(sourceChannel, position, chunkSize)
+                                    if (transferred <= 0) break
+                                    
+                                    position += transferred
+                                    syncCounter += transferred
+                                    
+                                    // Sync every 200MB instead of at the end
+                                    if (syncCounter >= 200 * 1024 * 1024L) {
+                                        fos.flush()
+                                        fos.fd.sync()
+                                        syncCounter = 0
+                                        delay(5) // Small pause for FS recovery
+                                    }
+                                    
+                                    // Throttle progress (max every 500ms)
+                                    val now = System.currentTimeMillis()
+                                    if (totalSize > 0 && now - lastProgressTime >= 500L) {
+                                        setProgressAsync(workDataOf(KEY_PROGRESS to (position * 30 / totalSize).toInt()))
+                                        lastProgressTime = now
+                                    }
+                                    
+                                    // Keep lock alive
+                                    if (now - lockFile.lastModified() > 1000L) {
+                                        lockFile.setLastModified(now)
+                                    }
                                 }
-                                lockFile.setLastModified(System.currentTimeMillis())
+                                fos.flush()
+                                fos.fd.sync()
                             }
-                            fos.flush(); fos.getFD().sync()
                         }
                     }
-                    pfd.close()
+                } finally {
+                    pfd?.close()
                 }
             }
             
@@ -130,7 +158,7 @@ class VehicleImportWorker(
                 return dir.listFiles()?.filter { it.isDirectory }?.firstNotNullOfOrNull { findDataRoot(it) }
             }
 
-            val dataRoot = findDataRoot(tempDir) ?: throw Exception("Struktur im VPK ungültig.")
+            val dataRoot = findDataRoot(tempDir) ?: throw Exception("Structure in VPK invalid.")
             val manifestFile = File(dataRoot, "manifest.json")
             val json = JSONObject(JsonUtil.sanitizeJson(manifestFile.readText()))
             

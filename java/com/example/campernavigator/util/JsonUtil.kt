@@ -16,7 +16,7 @@ object JsonUtil {
         // 2. Trailing commas entfernen (z.B. "a": 1, } -> "a": 1 })
         result = result.replace(Regex(",\\s*([}\\]])"), "$1")
         
-        // 3. Fehlende Kommata zwischen Objekten/Arrays und dem nächsten Key fixen (z.B. } "builder" -> }, "builder")
+        // 3. Fix missing commas between objects/arrays and next key (e.g. } "builder" -> }, "builder")
         result = result.replace(Regex("([}\\]])\\s*\""), "$1, \"")
         
         return result

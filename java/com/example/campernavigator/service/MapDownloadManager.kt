@@ -73,7 +73,7 @@ class MapDownloadManager(
         val externalRoot = File(context.getExternalFilesDir(null), "routing")
         val cacheDir = context.cacheDir
 
-        // Alles löschen, was nach Fragment aussieht
+        // Delete everything that looks like a fragment
         listOf(internalRoot, externalRoot, cacheDir).forEach { dir ->
             if (dir.exists()) {
                 dir.listFiles { f -> 

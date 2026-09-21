@@ -25,6 +25,7 @@ import com.example.campernavigator.service.SearchResult
 import com.example.campernavigator.service.SearchService
 import com.example.campernavigator.service.TrafficEvent
 import com.example.campernavigator.worker.MapImportWorker
+import com.example.campernavigator.worker.VehicleImportWorker
 import com.example.campernavigator.data.DestinationEntity
 import com.example.campernavigator.data.DestinationDao
 import com.example.campernavigator.data.SearchRepository
@@ -141,7 +142,10 @@ data class MapUiState(
     val installedVehicleIds: Set<String> = emptySet(),
     val vehicleImportState: DownloadState = DownloadState.Idle,
     val navigationUiMode: NavigationUiMode = NavigationUiMode.HOME,
-    val isCameraTracking: Boolean = true
+    val isCameraTracking: Boolean = true,
+    val isMapVisible: Boolean = true,
+    val isLauncherInForeground: Boolean = false,
+    val windowZOrder: Int = 500
 )
 
 enum class MapMode { DAY, NIGHT, AUTO }
@@ -190,18 +194,18 @@ class MapViewModel(
     private var isLocationTrackingActive = false
 
     init {
-        // 1. Zuerst alle verfügbaren Daten scannen
+        // 1. First scan all available data
         refreshInstalledRegions()
         vehicleManager.cleanUpOrphanedFolders()
         refreshInstalledVehicles()
         refreshAvailableCameras()
 
-        // 2. Einstellungen laden (inkl. aktives Fahrzeug)
+        // 2. Load settings (including active vehicle)
         loadSettings()
         
         startLocationTracking()
 
-        // AUTO-LOAD MAP: Falls eine fertige Karte "MapPack_..." existiert, laden wir sie sofort
+        // AUTO-LOAD MAP: If a finished map "MapPack_..." exists, load it immediately
         viewModelScope.launch {
             delay(1000)
             val regionToLoad = NavigatorRuntime.findWarmRegionId(graphHopperEngine.context)
@@ -217,11 +221,11 @@ class MapViewModel(
             }
         }
 
-        // --- Import Beobachter (Sanierung) ---
+        // --- Import observer (cleanup) ---
         viewModelScope.launch {
             val wm = WorkManager.getInstance(graphHopperEngine.context)
             wm.getWorkInfosByTagFlow("map_import").collect { workInfos ->
-                // Wir nehmen NUR das EINE WorkInfo, das gerade aktiv ist oder als letztes beendet wurde
+                // We take ONLY the ONE WorkInfo that is currently active or finished last
                 val activeWork = workInfos.find { it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED }
                     ?: workInfos.maxByOrNull { it.id.toString() } ?: return@collect
                 
@@ -233,7 +237,7 @@ class MapViewModel(
                     WorkInfo.State.SUCCEEDED -> {
                         if (_uiState.value.downloadState !is DownloadState.Completed) {
                             val id = activeWork.outputData.getString(MapImportWorker.KEY_DISCOVERED_ID)
-                            // Nur laden, wenn die ID vorhanden ist (Ghost worker geben keine ID zurück)
+                            // Only load if ID is present (ghost workers return no ID)
                             if (id != null && !id.startsWith("tmp_") && !id.contains("stream_")) {
                                 FileLogger.log("MapViewModel: Import Success for $id")
                                 _uiState.update { it.copy(downloadState = DownloadState.Completed) }
@@ -251,7 +255,7 @@ class MapViewModel(
                     }
                     WorkInfo.State.CANCELLED -> {
                         FileLogger.log("MapViewModel: Import was CANCELLED by user.")
-                        // Wir lassen den "Abgebrochen" Status kurz stehen
+                        // We leave the "cancelled" status for a short moment
                         _uiState.update { it.copy(downloadState = DownloadState.Cancelling) }
                         launch {
                             delay(3000)
@@ -259,9 +263,54 @@ class MapViewModel(
                         }
                     }
                     else -> {
-                        // Für alle anderen Zustände (z.B. BLOCKED) gehen wir auf Idle
+                        // For all other states (e.g. BLOCKED) go to Idle
                         if (activeWork.state.isFinished && activeWork.state != WorkInfo.State.SUCCEEDED && activeWork.state != WorkInfo.State.FAILED) {
                             _uiState.update { it.copy(downloadState = DownloadState.Idle) }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Vehicle Import observer ---
+        viewModelScope.launch {
+            val wm = WorkManager.getInstance(graphHopperEngine.context)
+            wm.getWorkInfosByTagFlow("vehicle_import").collect { workInfos ->
+                val activeWork = workInfos.find { it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED }
+                    ?: workInfos.maxByOrNull { it.id.toString() } ?: return@collect
+                
+                when (activeWork.state) {
+                    WorkInfo.State.RUNNING -> {
+                        val progress = activeWork.progress.getInt(VehicleImportWorker.KEY_PROGRESS, 0)
+                        _uiState.update { it.copy(vehicleImportState = DownloadState.Processing(progress)) }
+                    }
+                    WorkInfo.State.SUCCEEDED -> {
+                        if (_uiState.value.vehicleImportState !is DownloadState.Completed) {
+                            val id = activeWork.outputData.getString(VehicleImportWorker.KEY_DISCOVERED_ID)
+                            if (id != null && !id.startsWith("tmp_")) {
+                                FileLogger.log("MapViewModel: Vehicle Import Success for $id")
+                                _uiState.update { it.copy(vehicleImportState = DownloadState.Completed) }
+                                refreshInstalledVehicles()
+                                launch { delay(3000); _uiState.update { it.copy(vehicleImportState = DownloadState.Idle) } }
+                                loadVehicle(id)
+                            }
+                        }
+                    }
+                    WorkInfo.State.FAILED -> {
+                        val error = activeWork.outputData.getString(VehicleImportWorker.KEY_ERROR_MESSAGE)
+                        _uiState.update { it.copy(vehicleImportState = DownloadState.Error(error ?: "Fehler")) }
+                    }
+                    WorkInfo.State.CANCELLED -> {
+                        FileLogger.log("MapViewModel: Vehicle Import was CANCELLED by user.")
+                        _uiState.update { it.copy(vehicleImportState = DownloadState.Cancelling) }
+                        launch {
+                            delay(3000)
+                            _uiState.update { it.copy(vehicleImportState = DownloadState.Idle) }
+                        }
+                    }
+                    else -> {
+                        if (activeWork.state.isFinished && activeWork.state != WorkInfo.State.SUCCEEDED && activeWork.state != WorkInfo.State.FAILED) {
+                            _uiState.update { it.copy(vehicleImportState = DownloadState.Idle) }
                         }
                     }
                 }
@@ -332,7 +381,7 @@ class MapViewModel(
         }
         lastGpsUpdateMillis = System.currentTimeMillis()
         
-        // CRASH-FIX: Normalisierung des Bearing-Werts für Pi 5 HAL (muss [0, 360) sein)
+        // CRASH-FIX: Normalize bearing value for Pi 5 HAL (must be [0, 360))
         val safeBearing = GeoUtil.normalizeBearing(location.bearing)
 
         val rawLatLng = LatLng(location.latitude, location.longitude)
@@ -344,11 +393,11 @@ class MapViewModel(
             } else SnapResult(rawLatLng, safeBearing, false)
             
             withContext(Dispatchers.Main) {
-                // HÖHEN-FILTER: Wir ignorieren Sprünge auf exakt 0.0m (oft ein Zeichen für verlorenen 3D Fix)
+                // ALTITUDE FILTER: We ignore jumps to exactly 0.0m (often sign of lost 3D fix)
                 val newAlt = if (location.altitude != 0.0) {
                     Math.round(location.altitude / 10.0) * 10.0
                 } else {
-                    _uiState.value.currentAltitude // Behalte letzte bekannte Höhe
+                    _uiState.value.currentAltitude // Keep last known altitude
                 }
 
                 _uiState.update { it.copy(
@@ -488,6 +537,29 @@ class MapViewModel(
         FileLogger.log("MapViewModel: navigationUiMode changed to $mode")
         _uiState.update {
             it.copy(navigationUiMode = mode)
+        }
+    }
+    fun setMapVisible(visible: Boolean) {
+        FileLogger.log("MapViewModel: Map visibility changed to $visible")
+        _uiState.update {
+            it.copy(isMapVisible = visible)
+        }
+    }
+
+    fun setLauncherInForeground(inForeground: Boolean) {
+        FileLogger.log("MapViewModel: Launcher in foreground: $inForeground")
+        _uiState.update {
+            it.copy(
+                isLauncherInForeground = inForeground,
+                windowZOrder = if (inForeground) 500 else 1000
+            )
+        }
+    }
+
+    fun setWindowZOrder(zOrder: Int) {
+        FileLogger.log("MapViewModel: Window z-order changed to $zOrder")
+        _uiState.update {
+            it.copy(windowZOrder = zOrder)
         }
     }
     fun setCameraTracking(active: Boolean) { _uiState.update { it.copy(isCameraTracking = active) } }

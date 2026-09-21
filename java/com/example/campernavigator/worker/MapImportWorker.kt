@@ -70,7 +70,7 @@ class MapImportWorker(
                 return@withContext Result.success(workDataOf(KEY_DISCOVERED_ID to regionId))
             }
 
-            // 2. PRÜFE OB ZIP SCHON IM CACHE (RESUME)
+            // 2. CHECK IF ZIP ALREADY IN CACHE (RESUME)
             var isCopyNeeded = true
             if (tempZip.exists() && tempZip.length() > 4000000000L) {
                 FileLogger.log("MapImportWorker: Found large ZIP in cache. Verifying...")
@@ -80,49 +80,64 @@ class MapImportWorker(
                 }
             }
 
-            // 3. TURBO-KOPIEREN (0-30%)
+            // 3. TURBO-KOPIEREN (0-30%) - Adaptive buffer für large files
             if (isCopyNeeded) {
                 FileLogger.log("MapImportWorker: Starting Turbo-Copy...")
-                val pfd = applicationContext.contentResolver.openFileDescriptor(Uri.parse(uriString), "r")
-                val totalSize = pfd?.statSize ?: -1L
-                if (pfd != null) {
-                    FileInputStream(pfd.fileDescriptor).use { input ->
-                        FileOutputStream(tempZip).use { output ->
-                            val buffer = ByteArray(16 * 1024 * 1024) // 16MB Turbo Buffer
-                            var bytesRead: Int
-                            var totalRead = 0L
-                            var syncCounter = 0L
-                            
-                            while (input.read(buffer).also { bytesRead = it } != -1) {
-                                output.write(buffer, 0, bytesRead)
-                                totalRead += bytesRead
-                                syncCounter += bytesRead
+                var pfd: android.os.ParcelFileDescriptor? = null
+                try {
+                    pfd = applicationContext.contentResolver.openFileDescriptor(Uri.parse(uriString), "r")
+                    val totalSize = pfd?.statSize ?: -1L
+                    
+                    if (pfd != null) {
+                        FileInputStream(pfd.fileDescriptor).use { input ->
+                            FileOutputStream(tempZip).use { output ->
+                                // Adaptive buffer: 4MB für stabilitäre/große Dateien
+                                val buffer = ByteArray(4 * 1024 * 1024)
+                                var bytesRead: Int
+                                var totalRead = 0L
+                                var syncCounter = 0L
+                                var lastProgressTime = System.currentTimeMillis()
                                 
-                                // Sync alle 500MB
-                                if (syncCounter >= 500 * 1024 * 1024) {
-                                    output.flush()
-                                    output.getFD().sync()
-                                    syncCounter = 0
-                                    delay(10) // Minimale Pause
+                                while (input.read(buffer).also { bytesRead = it } != -1) {
+                                    output.write(buffer, 0, bytesRead)
+                                    totalRead += bytesRead
+                                    syncCounter += bytesRead
+                                    
+                                    // Sync alle 200MB statt 500MB (besser für RPi5 SD)
+                                    if (syncCounter >= 200 * 1024 * 1024) {
+                                        output.flush()
+                                        output.getFD().sync()
+                                        syncCounter = 0
+                                        // Minimale Pause für FS-Recovery
+                                        delay(5)
+                                    }
+                                    
+                                    // Progress nur jede 500ms aktualisieren (Reduce overhead)
+                                    val now = System.currentTimeMillis()
+                                    if (totalSize > 0 && now - lastProgressTime >= 500L) {
+                                        setProgressAsync(workDataOf(KEY_PROGRESS to (totalRead * 30 / totalSize).toInt()))
+                                        lastProgressTime = now
+                                    }
+                                    
+                                    // Keep lock alive
+                                    if (now - lockFile.lastModified() > 1000L) {
+                                        lockFile.setLastModified(now)
+                                    }
                                 }
-                                
-                                if (totalSize > 0) {
-                                    setProgressAsync(workDataOf(KEY_PROGRESS to (totalRead * 30 / totalSize).toInt()))
-                                }
-                                lockFile.setLastModified(System.currentTimeMillis()) 
+                                output.flush()
+                                output.getFD().sync()
                             }
-                            output.flush()
-                            output.getFD().sync()
                         }
                     }
-                    pfd.close()
+                } finally {
+                    pfd?.close()
                 }
             }
             
             setProgressAsync(workDataOf(KEY_PROGRESS to 30))
             FileLogger.log("MapImportWorker: Copy finished (30%). Verifying CRC...")
 
-            if (!ZipUtil.checkIntegrity(tempZip)) throw Exception("ZIP Integrität fehlgeschlagen.")
+            if (!ZipUtil.checkIntegrity(tempZip)) throw Exception("ZIP integrity check failed.")
             
             setProgressAsync(workDataOf(KEY_PROGRESS to 31))
             FileLogger.log("MapImportWorker: Integrity verified (31%). Starting extraction...")

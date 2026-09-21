@@ -176,7 +176,7 @@ class GraphHopperRoutingService(
         val isTrailer = profile.name.lowercase().contains("trailer") || profile.name.lowercase().contains("anhänger")
         model.distanceInfluence = 70.0
         
-        // GH 11.0 Syntax für CustomModels
+        // GH 11.0 syntax for custom models
         model.addToPriority(If("road_class == MOTORWAY || road_class == TRUNK || road_class == PRIMARY", MULTIPLY, "1.0"))
         model.addToPriority(Statement.ElseIf("road_class == RESIDENTIAL || road_class == LIVING_STREET", MULTIPLY, "1.0"))
         model.addToPriority(Statement.ElseIf("road_class == SERVICE", MULTIPLY, if (isTrailer) "0.5" else "0.7"))

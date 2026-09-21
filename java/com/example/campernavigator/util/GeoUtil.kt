@@ -3,7 +3,7 @@ package com.example.campernavigator.util
 object GeoUtil {
     /**
      * Normalisiert den Kurswert auf den Bereich [0, 360).
-     * Android wirft eine IllegalArgumentException, wenn der Wert exakt 360.0 oder höher ist.
+     * Android throws IllegalArgumentException if value is exactly 360.0 or higher.
      */
     fun normalizeBearing(bearing: Float): Float {
         if (!bearing.isFinite()) return 0f

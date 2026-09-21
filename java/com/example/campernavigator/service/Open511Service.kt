@@ -20,7 +20,7 @@ data class TrafficEvent(
 class Open511Service(
     private val okHttpClient: OkHttpClient = OkHttpClient()
 ) {
-    // Standardmäßig DriveBC als Beispiel, kann aber übersteuert werden
+    // By default DriveBC as example, but can be overridden
     private var baseUrl: String = "https://api.open511.gov.bc.ca/events"
 
     suspend fun fetchEvents(bbox: String? = null): List<TrafficEvent> = withContext(Dispatchers.IO) {
@@ -44,7 +44,7 @@ class Open511Service(
                 val geography = event.optJSONObject("geography") ?: continue
                 val type = geography.optString("type")
                 
-                // Wir unterstützen für den Anfang Punkt-Geometrien
+                // For now we support point geometries
                 val location = if (type == "Point") {
                     val coords = geography.getJSONArray("coordinates")
                     LatLng(coords.getDouble(1), coords.getDouble(0))

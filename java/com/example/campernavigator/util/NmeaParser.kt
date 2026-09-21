@@ -50,7 +50,7 @@ object NmeaParser {
             }
             
             loc.time = System.currentTimeMillis()
-            loc.accuracy = 10f // Schätzung
+            loc.accuracy = 10f // Estimate
             
             return loc
         } catch (e: Exception) {
@@ -59,7 +59,7 @@ object NmeaParser {
     }
 
     /**
-     * Parsed einen $GPGGA oder $GNGGA Satz für Höheninformationen.
+     * Parses a $GPGGA or $GNGGA NMEA sentence for altitude information.
      * Format: $GPGGA,time,lat,N,lon,E,fix,sats,hdop,alt,M,...
      */
     fun parseGga(nmea: String): Location? {
@@ -68,7 +68,7 @@ object NmeaParser {
             val tokens = nmea.split(",")
             if (tokens.size < 10) return null
             
-            // Fix Qualität 0 = ungültig
+            // Fix quality 0 = invalid
             if (tokens[6] == "0") return null
             
             val loc = Location("nmea_gga")

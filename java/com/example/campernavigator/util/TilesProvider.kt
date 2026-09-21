@@ -31,7 +31,7 @@ class TilesProvider : ContentProvider() {
             val y = yWithExt.substringBefore(".").toInt()
             
             val mbtilesPath = uri.getQueryParameter("path") ?: return null
-            Log.d("TilesProvider", "Anfrage für Kachel: $z/$x/$y (Pfad: $mbtilesPath)")
+            Log.d("TilesProvider", "Request for tile: $z/$x/$y (Path: $mbtilesPath)")
             
             val tileData = MBTilesManager.getTile(mbtilesPath, z, x, y) ?: return null
             

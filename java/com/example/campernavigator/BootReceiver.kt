@@ -4,6 +4,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
+import java.io.File
+import java.nio.charset.StandardCharsets
 
 class BootReceiver : BroadcastReceiver() {
     companion object {
@@ -13,6 +15,7 @@ class BootReceiver : BroadcastReceiver() {
         private const val MODE_HOME = "HOME"
         private const val EXTRA_NAVIGATION_UI_MODE =
             "com.example.campernavigator.extra.NAVIGATION_UI_MODE"
+        private const val LUM_FILE_NAME = "nav_ui_mode.lum"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -30,24 +33,43 @@ class BootReceiver : BroadcastReceiver() {
             // The product default permission grant must be present in the image.
         }
 
-        val lastMode = context.getSharedPreferences(
-            NAVIGATION_STATE_PREFS,
-            Context.MODE_PRIVATE
-        ).getString(KEY_LAST_UI_MODE, MODE_HOME) ?: MODE_HOME
+        val lastMode = readPersistedNavigationUiMode(context)
 
-        val launchIntent = if (lastMode == MODE_FULLSCREEN) {
-            Intent(context, MainActivity::class.java).apply {
-                putExtra(EXTRA_NAVIGATION_UI_MODE, MODE_FULLSCREEN)
-            }
-        } else {
-            Intent(Intent.ACTION_MAIN).apply {
-                addCategory(Intent.CATEGORY_HOME)
-            }
-        }.apply {
+        val navigatorIntent = Intent(context, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
             addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra(EXTRA_NAVIGATION_UI_MODE, lastMode)
         }
-        context.startActivity(launchIntent)
+
+        val launcherIntent = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_HOME)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra(EXTRA_NAVIGATION_UI_MODE, lastMode)
+        }
+
+        context.startActivity(navigatorIntent)
+        context.startActivity(launcherIntent)
+    }
+
+    private fun readPersistedNavigationUiMode(context: Context): String {
+        // Try to read from LUM file first (source of truth from last shutdown)
+        val lumFile = File(context.filesDir, LUM_FILE_NAME)
+        if (lumFile.exists()) {
+            return try {
+                val content = lumFile.readText(StandardCharsets.UTF_8).trim()
+                if (content == MODE_FULLSCREEN) MODE_FULLSCREEN else MODE_HOME
+            } catch (e: Exception) {
+                MODE_HOME
+            }
+        }
+
+        // Fallback to SharedPreferences if LUM file not available
+        return context.getSharedPreferences(
+            NAVIGATION_STATE_PREFS,
+            Context.MODE_PRIVATE
+        ).getString(KEY_LAST_UI_MODE, MODE_HOME) ?: MODE_HOME
     }
 }

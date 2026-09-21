@@ -21,7 +21,7 @@ class TileInterceptor : Interceptor {
             try {
                 val pathSegments = url.pathSegments
                 
-                // --- Metadata-Handling: Dummy-Antworten für lokale Sprites ---
+                // --- Metadata handling: dummy responses for local sprites ---
                 if (pathSegments.contains("sprite")) {
                     val isPng = url.encodedPath.endsWith(".png")
                     val contentType = if (isPng) "image/png" else "application/json"
@@ -43,7 +43,7 @@ class TileInterceptor : Interceptor {
                         "{}".toByteArray()
                     }
 
-                    android.util.Log.v("TileInterceptor", "Dummy-Antwort ($contentType) für Metadata: ${url.encodedPath}")
+                    android.util.Log.v("TileInterceptor", "Dummy response ($contentType) for metadata: ${url.encodedPath}")
                     return Response.Builder()
                         .request(request)
                         .protocol(Protocol.HTTP_1_1)
@@ -84,7 +84,7 @@ class TileInterceptor : Interceptor {
                         .build()
                 } else {
                     // WICHTIG: 404 statt 204 nutzen und IMMER einen Body mitgeben (auch wenn leer).
-                    // Ein null-Body führt bei OkHttp zum Absturz des Interceptors.
+                    // A null body causes OkHttp interceptor to crash.
                     return Response.Builder()
                         .request(request)
                         .protocol(Protocol.HTTP_1_1)
@@ -122,7 +122,7 @@ class TileInterceptor : Interceptor {
             }
         } catch (e: Exception) {
             val hex = data.take(8).joinToString(" ") { String.format("%02X", it) }
-            android.util.Log.e("TileInterceptor", "Dekomprimierung fehlgeschlagen für $z/$x/$y (Magic: $hex): ${e.message}")
+            android.util.Log.e("TileInterceptor", "Decompression failed for $z/$x/$y (Magic: $hex): ${e.message}")
             data
         }
     }

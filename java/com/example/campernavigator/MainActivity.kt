@@ -1,6 +1,7 @@
 package com.example.campernavigator
 
 import android.Manifest
+import android.app.ActivityManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -8,9 +9,13 @@ import android.content.IntentFilter
 import android.content.pm.ActivityInfo
 import android.location.LocationManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.view.KeyEvent
+import android.view.WindowManager
+import java.io.File
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -33,6 +38,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.campernavigator.data.SearchRepository
 import com.example.campernavigator.data.TrafficRepository
+import com.example.campernavigator.overlay.AudioOverlayManager
 import com.example.campernavigator.service.FakeRoutingService
 import com.example.campernavigator.service.LocationProviderFactory
 import com.example.campernavigator.service.VoiceService
@@ -74,6 +80,8 @@ class MainActivity : ComponentActivity() {
 
     private var mapViewModel: MapViewModel? = null
     private var showSettingsMenu by mutableStateOf(false)
+    private var audioOverlayManager: AudioOverlayManager? = null
+    private var isInHomeMode = false
 
     private val navigationUiModeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -95,6 +103,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val shutdownReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == Intent.ACTION_SHUTDOWN) {
+                val lastMode = getSharedPreferences(NAVIGATION_STATE_PREFS, MODE_PRIVATE)
+                    .getString(KEY_LAST_UI_MODE, MODE_HOME) ?: MODE_HOME
+                persistToLumFile(lastMode)
+                FileLogger.log("MainActivity: Persisted mode to LUM on shutdown: $lastMode")
+            }
+        }
+    }
+
     private val locationPermissionRequest = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -111,6 +130,12 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
 
+        // Initialize overlay manager
+        audioOverlayManager = AudioOverlayManager(applicationContext)
+
+        // Configure window for proper multi-window rendering
+        configureWindowForMultiWindow()
+
         applyNavigationIntent(intent)
 
         NavigatorRuntime.configureMapRuntime(applicationContext)
@@ -120,6 +145,13 @@ class MainActivity : ComponentActivity() {
             navigationUiModeReceiver,
             IntentFilter(ACTION_NAVIGATION_UI_MODE_CHANGED),
             ContextCompat.RECEIVER_EXPORTED
+        )
+
+        ContextCompat.registerReceiver(
+            this,
+            shutdownReceiver,
+            IntentFilter(Intent.ACTION_SHUTDOWN),
+            ContextCompat.RECEIVER_NOT_EXPORTED
         )
 
         locationPermissionRequest.launch(
@@ -249,6 +281,14 @@ class MainActivity : ComponentActivity() {
             unregisterReceiver(navigationUiModeReceiver)
         } catch (_: Exception) {
         }
+        try {
+            unregisterReceiver(shutdownReceiver)
+        } catch (_: Exception) {
+        }
+        
+        // Clean up overlay manager
+        audioOverlayManager?.cleanup()
+        FileLogger.log("MainActivity: onDestroy - AudioOverlayManager cleaned up")
     }
 
     private fun checkGpsSettings() {
@@ -304,8 +344,74 @@ class MainActivity : ComponentActivity() {
             .edit()
             .putString(KEY_LAST_UI_MODE, mode)
             .apply()
-        mapViewModel?.setNavigationUiMode(
-            if (mode == MODE_FULLSCREEN) NavigationUiMode.FULLSCREEN else NavigationUiMode.HOME
-        )
+        
+        val uiMode = if (mode == MODE_FULLSCREEN) NavigationUiMode.FULLSCREEN else NavigationUiMode.HOME
+        mapViewModel?.setNavigationUiMode(uiMode)
+        
+        // Update window management states
+        when (mode) {
+            MODE_HOME -> {
+                FileLogger.log("MainActivity: setNavigationUiMode -> HOME: Launcher coming to foreground")
+                mapViewModel?.setLauncherInForeground(true)
+                mapViewModel?.setMapVisible(true)  // Map still visible behind launcher
+                isInHomeMode = true
+            }
+            MODE_FULLSCREEN -> {
+                FileLogger.log("MainActivity: setNavigationUiMode -> FULLSCREEN: Map in full foreground")
+                mapViewModel?.setLauncherInForeground(false)
+                mapViewModel?.setMapVisible(true)  // Map is fully visible
+                isInHomeMode = false
+            }
+        }
+    }
+
+    private fun configureWindowForMultiWindow() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val params = window.attributes
+            params.flags =
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS
+            window.attributes = params
+        }
+    }
+
+    private fun persistToLumFile(mode: String) {
+        try {
+            val lumFile = File(filesDir, "nav_ui_mode.lum")
+            lumFile.writeText(mode)
+        } catch (e: Exception) {
+            FileLogger.log("MainActivity: Failed to persist mode to LUM file: ${e.message}")
+        }
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_HOME) {
+            FileLogger.log("MainActivity: HOME key pressed")
+            if (isInHomeMode) {
+                moveTaskToBack(true)
+            } else {
+                isInHomeMode = true
+                setNavigationUiMode(MODE_HOME)
+            }
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (isInHomeMode) {
+            moveTaskToBack(true)
+        }
+    }
+
+    fun bringTaskToFront(context: Context) {
+        val packageName = context.packageName
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        am.getRunningTasks(Int.MAX_VALUE).forEach { taskInfo ->
+            if (taskInfo.topActivity?.packageName == packageName) {
+                am.moveTaskToFront(taskInfo.id, 0)
+                return
+            }
+        }
     }
 }

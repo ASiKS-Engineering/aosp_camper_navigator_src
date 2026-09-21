@@ -57,7 +57,7 @@ class SearchService(
                 val city = properties.optString("city", "")
                 val country = properties.optString("country", "")
 
-                // Erstelle einen aussagekräftigen Namen (z.B. "Hauptstraße 5" statt nur "5")
+                // Create meaningful name (e.g. "Main Street 5" instead of just "5")
                 val displayName = if (street.isNotEmpty() && housenumber.isNotEmpty()) {
                     "$street $housenumber"
                 } else if (name.isNotEmpty()) {
@@ -75,8 +75,8 @@ class SearchService(
                 val features = mutableListOf<CampingFeature>()
                 if (osmValue == "camp_site" || osmValue == "caravan_site" || query.contains("camping", ignoreCase = true)) {
                     // Da Photon keine detaillierten Tags liefert, simulieren wir hier 
-                    // Features basierend auf dem Namen oder zufällig für die Demo.
-                    // In einer echten App würde man hier eine zweite Anfrage an die Overpass API stellen.
+                    // Features based on name or random for demo.
+                    // In a real app you would make a second request to Overpass API here.
                     if (displayName.length % 2 == 0) features.add(CampingFeature.WATER)
                     if (displayName.length % 3 == 0) features.add(CampingFeature.ELECTRICITY)
                     if (displayName.contains("Park") || displayName.length % 5 == 0) features.add(CampingFeature.WASTE)

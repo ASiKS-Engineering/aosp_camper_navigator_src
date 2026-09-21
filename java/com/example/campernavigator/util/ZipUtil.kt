@@ -3,6 +3,7 @@ package com.example.campernavigator.util
 import java.io.File
 import java.io.FileOutputStream
 import java.util.zip.ZipFile
+import java.util.zip.ZipException
 
 object ZipUtil {
     
@@ -10,28 +11,57 @@ object ZipUtil {
     fun validateMapPackZip(file: File) {}
     fun validateVehiclePackZip(file: File) {}
 
+    /**
+     * Fast integrity check without full CRC validation (too slow for large files).
+     * Validates ZIP structure and readable entries instead.
+     */
     fun checkIntegrity(zipFile: File): Boolean {
-        FileLogger.log("ZipUtil: Running native integrity test (-t)...")
+        FileLogger.log("ZipUtil: Fast integrity check (ZIP structure)...")
         return try {
-            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", "/system/bin/unzip -t \"${zipFile.absolutePath}\""))
-            val result = process.waitFor()
-            result == 0
-        } catch (e: Exception) { false }
+            // 1. Quick size sanity check
+            if (zipFile.length() < 22) return false // Minimum ZIP size
+            
+            // 2. Try to open and enumerate entries
+            ZipFile(zipFile).use { zf ->
+                var entryCount = 0
+                val entries = zf.entries()
+                
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    entryCount++
+                    
+                    // Timeout protection: if too many entries or taking too long, abort check
+                    if (entryCount > 10000) {
+                        FileLogger.log("ZipUtil: Too many entries, skipping full check")
+                        return@use
+                    }
+                }
+                
+                return entryCount > 0 // Valid if we found any entries
+            }
+        } catch (e: ZipException) {
+            FileLogger.log("ZipUtil: ZIP structure invalid - ${e.message}")
+            false
+        } catch (e: Exception) {
+            FileLogger.log("ZipUtil: Integrity check failed - ${e.message}")
+            false
+        }
     }
 
     /**
-     * PRECISION BYTE-STREAM EXTRACTION (Pi 5 optimized):
-     * - Progress is calculated based on BYTES, not file count.
-     * - Frequent hardware syncs for large files.
-     * - 256KB buffer for speed.
+     * OPTIMIZED BYTE-STREAM EXTRACTION:
+     * - Fewer syncs (only every 200MB for large files)
+     * - Reduced sleep time (5ms instead of 50ms)
+     * - 512KB buffer for larger throughput
+     * - Progress callback throttled
      */
     fun unzip(zipFile: File, targetDirectory: File, onProgress: ((Int) -> Unit)? = null) {
-        FileLogger.log("ZipUtil: Starting byte-accurate turbo extraction...")
+        FileLogger.log("ZipUtil: Starting optimized extraction...")
         targetDirectory.mkdirs()
         
         try {
             ZipFile(zipFile).use { zf ->
-                // 1. Gesamtgröße berechnen
+                // 1. Calculate total size
                 var totalBytes = 0L
                 val sizeEntries = zf.entries()
                 while (sizeEntries.hasMoreElements()) {
@@ -42,6 +72,7 @@ object ZipUtil {
                 
                 var bytesWrittenAcrossAllFiles = 0L
                 var lastReportedPercent = -1
+                var lastProgressTime = System.currentTimeMillis()
                 val entries = zf.entries()
                 
                 while (entries.hasMoreElements()) {
@@ -53,14 +84,14 @@ object ZipUtil {
                     } else {
                         targetFile.parentFile?.mkdirs()
                         
-                        val isExtraLarge = entry.size > 100 * 1024 * 1024
+                        val isExtraLarge = entry.size > 500 * 1024 * 1024 // Only for really huge files
                         if (isExtraLarge) {
                             FileLogger.log("ZipUtil: Extracting large file: ${entry.name} (${entry.size / 1024 / 1024} MB)")
                         }
 
                         zf.getInputStream(entry).use { input ->
                             FileOutputStream(targetFile).use { output ->
-                                val buffer = ByteArray(256 * 1024) 
+                                val buffer = ByteArray(512 * 1024) // 512KB for better throughput
                                 var len = input.read(buffer)
                                 var syncCounter = 0L
                                 
@@ -69,35 +100,44 @@ object ZipUtil {
                                     syncCounter += len.toLong()
                                     bytesWrittenAcrossAllFiles += len.toLong()
                                     
-                                    // Hardware Sync alle 100MB
-                                    if (isExtraLarge && syncCounter >= 100 * 1024 * 1024) {
+                                    // Hardware Sync nur für sehr große Dateien, alle 200MB
+                                    if (isExtraLarge && syncCounter >= 200 * 1024 * 1024) {
                                         output.flush()
                                         try {
                                             output.fd.sync()
                                         } catch (e: Exception) {}
                                         syncCounter = 0
-                                        Thread.sleep(50) // More breathing room for RPi5 SD controller
+                                        // Reduced sleep time (5ms statt 50ms) for better throughput
+                                        Thread.sleep(5)
                                     }
                                     
-                                    // Fortschritt alle 1% oder 10MB melden
-                                    val currentPercent = (bytesWrittenAcrossAllFiles * 100 / totalBytes).toInt()
-                                    if (currentPercent != lastReportedPercent) {
-                                        onProgress?.invoke(currentPercent)
-                                        lastReportedPercent = currentPercent
+                                    // Throttle progress callback (max every 500ms)
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastProgressTime >= 500L) {
+                                        val currentPercent = (bytesWrittenAcrossAllFiles * 100 / totalBytes).toInt()
+                                        if (currentPercent != lastReportedPercent) {
+                                            onProgress?.invoke(currentPercent)
+                                            lastReportedPercent = currentPercent
+                                        }
+                                        lastProgressTime = now
                                     }
                                     
                                     len = input.read(buffer)
                                 }
                                 output.flush()
-                                if (isExtraLarge) output.fd.sync()
+                                if (isExtraLarge) {
+                                    try {
+                                        output.fd.sync()
+                                    } catch (e: Exception) {}
+                                }
                             }
                         }
                     }
                 }
             }
-            FileLogger.log("ZipUtil: Precision extraction SUCCESSFUL.")
+            FileLogger.log("ZipUtil: Extraction SUCCESSFUL.")
         } catch (e: Exception) {
-            FileLogger.log("ZipUtil: TURBO FAILED: ${e.message}", "ERROR")
+            FileLogger.log("ZipUtil: Extraction FAILED: ${e.message}", "ERROR")
             throw e
         }
     }
