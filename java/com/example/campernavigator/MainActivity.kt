@@ -118,7 +118,6 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         FileLogger.log("MainActivity: Permissions checked: $permissions")
-        checkGpsSettings()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
