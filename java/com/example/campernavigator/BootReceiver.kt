@@ -35,13 +35,10 @@ class BootReceiver : BroadcastReceiver() {
 
         val lastMode = readPersistedNavigationUiMode(context)
 
-        val navigatorIntent = Intent(context, MainActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            putExtra(EXTRA_NAVIGATION_UI_MODE, lastMode)
-        }
-
+        // Do NOT start MainActivity here as a standalone task: CarLauncher's TaskView already
+        // embeds it via its own maps intent. Starting it separately and then immediately
+        // requesting HOME below moves that freshly-started task straight to the back, where
+        // nothing ever brings it forward again (the embedded nav view stays invisible forever).
         val launcherIntent = Intent(Intent.ACTION_MAIN).apply {
             addCategory(Intent.CATEGORY_HOME)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -50,7 +47,6 @@ class BootReceiver : BroadcastReceiver() {
             putExtra(EXTRA_NAVIGATION_UI_MODE, lastMode)
         }
 
-        context.startActivity(navigatorIntent)
         context.startActivity(launcherIntent)
     }
 

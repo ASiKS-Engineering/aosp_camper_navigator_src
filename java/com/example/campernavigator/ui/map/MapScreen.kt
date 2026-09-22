@@ -165,6 +165,7 @@ import org.maplibre.android.location.modes.CameraMode
 import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
+import org.maplibre.android.maps.Style
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
@@ -621,10 +622,10 @@ fun MapScreen(
                         map.setMinZoomPreference(2.0)  // Verhindert zu weites Auszoomen
                         
                         fun loadStyle() {
-                            // Wenn wir hasLocalTiles haben, lassen wir die Initialisierung 
-                            // durch den LaunchedEffect (unten) erledigen, um Dopplungen zu vermeiden.
-                            if (uiState.hasLocalTiles && uiState.activeRegionId != null) {
-                                android.util.Log.d("MapScreen", "Initialer Load wird an LaunchedEffect delegiert.")
+                            // Wenn wir offline sind oder lokale Karten haben, lassen wir die Initialisierung 
+                            // durch den LaunchedEffect erledigen, um Dopplungen zu vermeiden.
+                            if (uiState.isOffline || (uiState.hasLocalTiles && uiState.activeRegionId != null)) {
+                                Log.d("MapScreen", "Initialer Load wird an LaunchedEffect delegiert (Offline=${uiState.isOffline})")
                                 return
                             }
 
@@ -641,12 +642,13 @@ fun MapScreen(
                                 viewModel.setMapReady(true)
                             }
                             
-                            // Monitor: If no style after 10 sec, write log
+                            // Monitor: Falls nach 4 Sekunden (Online) kein Stil da ist, brechen wir den Splash ab
                             Handler(Looper.getMainLooper()).postDelayed({
                                 if (map.style == null) {
-                                    FileLogger.log("MapScreen: WARNING - Style still not loaded after 10s. Internet issues?", "ERROR")
+                                    FileLogger.log("MapScreen: Style not loaded after 4s. Forcing ready state for UI.")
+                                    viewModel.setMapReady(true)
                                 }
-                            }, 10000)
+                            }, 4000)
                         }
 
                         loadStyle()
@@ -2513,25 +2515,29 @@ fun MapScreen(
         resetCameraTracking()
     }
 
-    // Map Style Effect (Night Mode / Local Tiles)
-    LaunchedEffect(uiState.isNightMode, uiState.hasLocalTiles, uiState.activeRegionId) {
+    // Map Style Effect (Night Mode / Local Tiles / Offline Fallback)
+    LaunchedEffect(uiState.isNightMode, uiState.hasLocalTiles, uiState.activeRegionId, uiState.isOffline) {
         val map = mapInstance ?: return@LaunchedEffect
-        val regionId = uiState.activeRegionId ?: return@LaunchedEffect
         
-        val builder = org.maplibre.android.maps.Style.Builder()
-        val isOffline = uiState.hasLocalTiles && uiState.localMBTilesPath != null
+        // Wenn wir offline sind und keine aktiven lokalen Kacheln haben, 
+        // versuchen wir dennoch einen minimalen Stil zu laden, damit die App startet.
+        val regionId = uiState.activeRegionId ?: "fallback"
         
-        if (isOffline) {
+        val builder = Style.Builder()
+        val isOfflineMode = uiState.isOffline || (uiState.hasLocalTiles && uiState.localMBTilesPath != null)
+        
+        if (isOfflineMode) {
             try {
                 val template = context.assets.open("offline_style.json").bufferedReader().use { it.readText() }
                 val encodedRegion = android.net.Uri.encode(regionId)
                 val finalJson = template.replace("PLACEHOLDER_REGION", encodedRegion)
                 
-                android.util.Log.d("MapScreen", "Lade Offline-Stil für: $regionId (JSON Length: ${finalJson.length})")
+                Log.d("MapScreen", "Lade Offline-Stil (isOffline=${uiState.isOffline}, region=$regionId)")
                 builder.fromJson(finalJson)
             } catch (e: Exception) {
-                android.util.Log.e("MapScreen", "Error loading offline style", e)
-                builder.fromUri("https://tiles.openfreemap.org/styles/liberty")
+                Log.e("MapScreen", "Error loading offline style, using simple background fallback", e)
+                // Minimalistisches JSON als absoluter Fallback
+                builder.fromJson("""{"version": 8, "sources": {}, "layers": [{"id": "background", "type": "background", "paint": {"background-color": "#efede6"}}]}""")
             }
         } else {
             val url = if (uiState.isNightMode) "https://tiles.openfreemap.org/styles/fiord" 
@@ -2541,7 +2547,7 @@ fun MapScreen(
         }
             
         map.setStyle(builder) { style ->
-            android.util.Log.i("MapScreen", "Stil '$regionId' erfolgreich geladen.")
+            Log.i("MapScreen", "Stil erfolgreich gesetzt (Offline=$isOfflineMode)")
             updateMapPadding()
             enableLocation(map)
             setupRouteLayers(style)

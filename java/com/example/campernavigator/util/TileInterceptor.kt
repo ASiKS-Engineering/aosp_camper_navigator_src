@@ -1,5 +1,6 @@
 package com.example.campernavigator.util
 
+import android.util.Log
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.Protocol
@@ -21,29 +22,40 @@ class TileInterceptor : Interceptor {
             try {
                 val pathSegments = url.pathSegments
                 
-                // --- Metadata handling: dummy responses for local sprites ---
-                if (pathSegments.contains("sprite")) {
+                // --- Metadata & Glyphs handling: dummy responses for offline start ---
+                if (pathSegments.contains("sprite") || pathSegments.contains("fonts")) {
                     val isPng = url.encodedPath.endsWith(".png")
-                    val contentType = if (isPng) "image/png" else "application/json"
+                    val isPbf = url.encodedPath.endsWith(".pbf")
                     
-                    val body = if (isPng) {
-                        // Standard 1x1 Transparent PNG (67 bytes)
-                        byteArrayOf(
-                            0x89.toByte(), 0x50.toByte(), 0x4E.toByte(), 0x47.toByte(), 0x0D.toByte(), 0x0A.toByte(), 0x1A.toByte(), 0x0A.toByte(),
-                            0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x0D.toByte(), 0x49.toByte(), 0x48.toByte(), 0x44.toByte(), 0x52.toByte(), // IHDR
-                            0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x01.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x01.toByte(),
-                            0x08.toByte(), 0x06.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x1F.toByte(), 0x15.toByte(), 0xC4.toByte(), 0x89.toByte(),
-                            0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x0A.toByte(), 0x49.toByte(), 0x44.toByte(), 0x41.toByte(), 0x54.toByte(), // IDAT
-                            0x78.toByte(), 0x9C.toByte(), 0x63.toByte(), 0x00.toByte(), 0x01.toByte(), 0x00.toByte(), 0x00.toByte(), 0x05.toByte(),
-                            0x00.toByte(), 0x01.toByte(), 0x0D.toByte(), 0x0A.toByte(), 0x2D.toByte(), 0xB4.toByte(),
-                            0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x49.toByte(), 0x45.toByte(), 0x4E.toByte(), 0x44.toByte(), // IEND
-                            0xAE.toByte(), 0x42.toByte(), 0x60.toByte(), 0x82.toByte()
-                        )
-                    } else {
-                        "{}".toByteArray()
+                    val contentType = when {
+                        isPng -> "image/png"
+                        isPbf -> "application/x-protobuf"
+                        else -> "application/json"
+                    }
+                    
+                    val body = when {
+                        isPng -> {
+                            // Standard 1x1 Transparent PNG (67 bytes)
+                            byteArrayOf(
+                                0x89.toByte(), 0x50.toByte(), 0x4E.toByte(), 0x47.toByte(), 0x0D.toByte(), 0x0A.toByte(), 0x1A.toByte(), 0x0A.toByte(),
+                                0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x0D.toByte(), 0x49.toByte(), 0x48.toByte(), 0x44.toByte(), 0x52.toByte(),
+                                0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x01.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x01.toByte(),
+                                0x08.toByte(), 0x06.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x1F.toByte(), 0x15.toByte(), 0xC4.toByte(), 0x89.toByte(),
+                                0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x0A.toByte(), 0x49.toByte(), 0x44.toByte(), 0x41.toByte(), 0x54.toByte(),
+                                0x78.toByte(), 0x9C.toByte(), 0x63.toByte(), 0x00.toByte(), 0x01.toByte(), 0x00.toByte(), 0x00.toByte(), 0x05.toByte(),
+                                0x00.toByte(), 0x01.toByte(), 0x0D.toByte(), 0x0A.toByte(), 0x2D.toByte(), 0xB4.toByte(),
+                                0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x49.toByte(), 0x45.toByte(), 0x4E.toByte(), 0x44.toByte(),
+                                0xAE.toByte(), 0x42.toByte(), 0x60.toByte(), 0x82.toByte()
+                            )
+                        }
+                        isPbf -> {
+                            // Minimal empty PBF for glyphs to satisfy MapLibre
+                            byteArrayOf(0x00)
+                        }
+                        else -> "{}".toByteArray()
                     }
 
-                    android.util.Log.v("TileInterceptor", "Dummy response ($contentType) for metadata: ${url.encodedPath}")
+                    Log.v("TileInterceptor", "Serving offline placeholder ($contentType) for: ${url.encodedPath}")
                     return Response.Builder()
                         .request(request)
                         .protocol(Protocol.HTTP_1_1)

@@ -316,11 +316,26 @@ class MapViewModel(
             }
         }
 
-        // SPLASH SCREEN TIMEOUT
+        // SPLASH SCREEN TIMEOUT: Fallback, falls GPS oder Map-Ready hängen
         viewModelScope.launch {
-            delay(10000)
-            if (!_uiState.value.isLocationDetermined) {
-                _uiState.update { it.copy(isLocationDetermined = true, isInitialZoomPerformed = true, forceExitSplash = true) }
+            // Wenn offline, brechen wir den Splash-Screen viel früher ab
+            var elapsed = 0L
+            val maxWait = 10000L
+            while (elapsed < maxWait && !_uiState.value.isLocationDetermined && !_uiState.value.forceExitSplash) {
+                val step = 500L
+                delay(step)
+                elapsed += step
+                if (_uiState.value.isOffline && elapsed >= 2500L) break
+            }
+            
+            if (!_uiState.value.isLocationDetermined || !_uiState.value.isMapReady) {
+                FileLogger.log("MapViewModel: Splash timeout reached (Offline=${_uiState.value.isOffline}). Forcing exit.")
+                _uiState.update { it.copy(
+                    isLocationDetermined = true, 
+                    isInitialZoomPerformed = true, 
+                    forceExitSplash = true,
+                    isMapReady = true // Sicherstellen, dass die UI reagiert
+                ) }
             }
         }
     }

@@ -10,7 +10,7 @@
     }
   },
   "sprite": "http://offline.map/sprite/sprite",
-  "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+  "glyphs": "http://offline.map/fonts/{fontstack}/{range}.pbf",
   "layers": [
     {
       "id": "background",

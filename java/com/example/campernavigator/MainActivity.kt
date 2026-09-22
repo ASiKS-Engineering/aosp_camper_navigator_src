@@ -234,8 +234,11 @@ class MainActivity : ComponentActivity() {
                 val uiState by mapViewModelInstance.uiState.collectAsState()
                 var forceHideSplash by remember { mutableStateOf(false) }
 
-                LaunchedEffect(Unit) {
-                    delay(5000)
+                LaunchedEffect(uiState.isOffline) {
+                    // Wenn offline, reduzieren wir den Timeout für den Splash-Screen auf 2 Sekunden,
+                    // da Online-Tiles ohnehin nicht geladen werden können.
+                    val timeout = if (uiState.isOffline) 2000L else 5000L
+                    delay(timeout)
                     forceHideSplash = true
                 }
 
@@ -385,22 +388,15 @@ class MainActivity : ComponentActivity() {
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_HOME) {
             FileLogger.log("MainActivity: HOME key pressed")
-            if (isInHomeMode) {
-                moveTaskToBack(true)
-            } else {
-                isInHomeMode = true
-                setNavigationUiMode(MODE_HOME)
-            }
+            // This activity always runs embedded in CarLauncher's TaskView. Visibility is
+            // controlled exclusively by the host via z-order/ACTION_NAVIGATION_UI_MODE_CHANGED;
+            // never call moveTaskToBack() here or the embedded task gets hidden permanently.
+            isInHomeMode = true
+            setNavigationUiMode(MODE_HOME)
+
             return true
         }
         return super.onKeyDown(keyCode, event)
-    }
-
-    override fun onUserLeaveHint() {
-        super.onUserLeaveHint()
-        if (isInHomeMode) {
-            moveTaskToBack(true)
-        }
     }
 
     fun bringTaskToFront(context: Context) {
