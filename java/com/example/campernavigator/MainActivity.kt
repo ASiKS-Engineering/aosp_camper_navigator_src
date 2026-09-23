@@ -259,7 +259,6 @@ class MainActivity : ComponentActivity() {
             unregisterReceiver(navigationUiModeReceiver)
         } catch (_: Exception) {
         }
-        }
         
         // Clean up overlay manager
         audioOverlayManager?.cleanup()

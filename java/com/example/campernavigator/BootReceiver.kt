@@ -36,23 +36,4 @@ class BootReceiver : BroadcastReceiver() {
 
         context.startActivity(launcherIntent)
     }
-
-    private fun readPersistedNavigationUiMode(context: Context): String {
-        // Try to read from LUM file first (source of truth from last shutdown)
-        val lumFile = File(context.filesDir, LUM_FILE_NAME)
-        if (lumFile.exists()) {
-            return try {
-                val content = lumFile.readText(StandardCharsets.UTF_8).trim()
-                if (content == MODE_FULLSCREEN) MODE_FULLSCREEN else MODE_HOME
-            } catch (e: Exception) {
-                MODE_HOME
-            }
-        }
-
-        // Fallback to SharedPreferences if LUM file not available
-        return context.getSharedPreferences(
-            NAVIGATION_STATE_PREFS,
-            Context.MODE_PRIVATE
-        ).getString(KEY_LAST_UI_MODE, MODE_HOME) ?: MODE_HOME
-    }
 }
