@@ -69,9 +69,6 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_NAVIGATION_UI_MODE =
             "com.example.campernavigator.extra.NAVIGATION_UI_MODE"
 
-        private const val NAVIGATION_STATE_PREFS = "navigation_state"
-        private const val KEY_LAST_UI_MODE = "last_ui_mode"
-
         const val MODE_HOME = "HOME"
         const val MODE_FULLSCREEN = "FULLSCREEN"
     }
@@ -97,17 +94,6 @@ class MainActivity : ComponentActivity() {
                     FileLogger.log("MainActivity: navigation UI mode -> FULLSCREEN")
                     setNavigationUiMode(MODE_FULLSCREEN)
                 }
-            }
-        }
-    }
-
-    private val shutdownReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == Intent.ACTION_SHUTDOWN) {
-                val lastMode = getSharedPreferences(NAVIGATION_STATE_PREFS, MODE_PRIVATE)
-                    .getString(KEY_LAST_UI_MODE, MODE_HOME) ?: MODE_HOME
-                persistToLumFile(lastMode)
-                FileLogger.log("MainActivity: Persisted mode to LUM on shutdown: $lastMode")
             }
         }
     }
@@ -142,13 +128,6 @@ class MainActivity : ComponentActivity() {
             navigationUiModeReceiver,
             IntentFilter(ACTION_NAVIGATION_UI_MODE_CHANGED),
             ContextCompat.RECEIVER_EXPORTED
-        )
-
-        ContextCompat.registerReceiver(
-            this,
-            shutdownReceiver,
-            IntentFilter(Intent.ACTION_SHUTDOWN),
-            ContextCompat.RECEIVER_NOT_EXPORTED
         )
 
         locationPermissionRequest.launch(
@@ -217,10 +196,9 @@ class MainActivity : ComponentActivity() {
                 )
                 mapViewModel = mapViewModelInstance
 
-                val initialMode = intent?.getStringExtra(EXTRA_NAVIGATION_UI_MODE)
-                    ?: getSharedPreferences(NAVIGATION_STATE_PREFS, MODE_PRIVATE)
-                        .getString(KEY_LAST_UI_MODE, MODE_HOME)
-                    ?: MODE_HOME
+                val initialMode =
+					intent?.getStringExtra(EXTRA_NAVIGATION_UI_MODE)
+						?: MODE_HOME
                 mapViewModelInstance.setNavigationUiMode(
                     if (initialMode == MODE_FULLSCREEN) {
                         NavigationUiMode.FULLSCREEN
@@ -281,9 +259,6 @@ class MainActivity : ComponentActivity() {
             unregisterReceiver(navigationUiModeReceiver)
         } catch (_: Exception) {
         }
-        try {
-            unregisterReceiver(shutdownReceiver)
-        } catch (_: Exception) {
         }
         
         // Clean up overlay manager
@@ -364,27 +339,5 @@ class MainActivity : ComponentActivity() {
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS
             window.attributes = params
         }
-    }
-
-    private fun persistToLumFile(mode: String) {
-        try {
-            val lumFile = File(filesDir, "nav_ui_mode.lum")
-            lumFile.writeText(mode)
-        } catch (e: Exception) {
-            FileLogger.log("MainActivity: Failed to persist mode to LUM file: ${e.message}")
-        }
-    }
-
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_HOME) {
-            FileLogger.log("MainActivity: HOME key pressed")
-            // This activity always runs embedded in CarLauncher's TaskView. Visibility is
-            // controlled exclusively by the host via z-order/ACTION_NAVIGATION_UI_MODE_CHANGED;
-            // never call moveTaskToBack() here or the embedded task gets hidden permanently.
-            setNavigationUiMode(MODE_HOME)
-
-            return true
-        }
-        return super.onKeyDown(keyCode, event)
     }
 }

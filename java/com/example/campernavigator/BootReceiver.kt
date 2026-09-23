@@ -8,16 +8,6 @@ import java.io.File
 import java.nio.charset.StandardCharsets
 
 class BootReceiver : BroadcastReceiver() {
-    companion object {
-        private const val NAVIGATION_STATE_PREFS = "navigation_state"
-        private const val KEY_LAST_UI_MODE = "last_ui_mode"
-        private const val MODE_FULLSCREEN = "FULLSCREEN"
-        private const val MODE_HOME = "HOME"
-        private const val EXTRA_NAVIGATION_UI_MODE =
-            "com.example.campernavigator.extra.NAVIGATION_UI_MODE"
-        private const val LUM_FILE_NAME = "nav_ui_mode.lum"
-    }
-
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) {
             return
@@ -33,8 +23,6 @@ class BootReceiver : BroadcastReceiver() {
             // The product default permission grant must be present in the image.
         }
 
-        val lastMode = readPersistedNavigationUiMode(context)
-
         // Do NOT start MainActivity here as a standalone task: CarLauncher's TaskView already
         // embeds it via its own maps intent. Starting it separately and then immediately
         // requesting HOME below moves that freshly-started task straight to the back, where
@@ -44,7 +32,6 @@ class BootReceiver : BroadcastReceiver() {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
             addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            putExtra(EXTRA_NAVIGATION_UI_MODE, lastMode)
         }
 
         context.startActivity(launcherIntent)
