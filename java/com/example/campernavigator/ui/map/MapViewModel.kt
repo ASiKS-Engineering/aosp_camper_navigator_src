@@ -140,11 +140,9 @@ data class MapUiState(
     val routingMode: RoutingMode = RoutingMode.FASTEST,
     val installedVehicleIds: Set<String> = emptySet(),
     val vehicleImportState: DownloadState = DownloadState.Idle,
-    val navigationUiMode: NavigationUiMode = NavigationUiMode.HOME,
-    val isCameraTracking: Boolean = true,
-    val isMapVisible: Boolean = true,
-    val isLauncherInForeground: Boolean = false,
-    val windowZOrder: Int = 500
+	val navigationUiMode: NavigationUiMode = NavigationUiMode.HOME,
+	val isCameraTracking: Boolean = true,
+	val isMapVisible: Boolean = true
 )
 
 enum class MapMode { DAY, NIGHT, AUTO }
@@ -559,17 +557,6 @@ class MapViewModel(
             it.copy(isMapVisible = visible)
         }
     }
-
-    fun setLauncherInForeground(inForeground: Boolean) {
-        FileLogger.log("MapViewModel: Launcher in foreground: $inForeground")
-        _uiState.update {
-            it.copy(
-                isLauncherInForeground = inForeground,
-                windowZOrder = if (inForeground) 500 else 1000
-            )
-        }
-    }
-
     fun setWindowZOrder(zOrder: Int) {
         FileLogger.log("MapViewModel: Window z-order changed to $zOrder")
         _uiState.update {

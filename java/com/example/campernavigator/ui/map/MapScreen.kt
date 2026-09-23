@@ -305,6 +305,32 @@ fun MapScreen(
         override fun removeLocationUpdates(pendingIntent: android.app.PendingIntent?) {}
     }
 
+	data class NavigationSafeArea(
+		val left: Int = 0,
+		val top: Int = 0,
+		val right: Int = 0,
+		val bottom: Int = 0
+	)
+
+	fun calculateNavigationSafeArea(
+		mode: NavigationUiMode,
+		width: Int,
+		height: Int
+	): NavigationSafeArea {
+		return when (mode) {
+			NavigationUiMode.HOME -> {
+				NavigationSafeArea(
+					left = (width * 0.18f).roundToInt(),
+					top = (height * 0.20f).roundToInt()
+				)
+			}
+
+			NavigationUiMode.FULLSCREEN -> {
+				NavigationSafeArea()
+			}
+		}
+	}
+
     // Hilfsfunktion zum Initialisieren der Route-Layer
     fun setupRouteLayers(style: org.maplibre.android.maps.Style) {
         android.util.Log.d("MapScreen", "Initialisiere Route-Layer...")
@@ -416,7 +442,13 @@ fun MapScreen(
     }
 
     fun updateMapPadding(isOverview: Boolean = false) {
-        val map = mapInstance ?: return
+        val safeArea = calculateNavigationSafeArea(
+			uiState.navigationUiMode,
+			w,
+			h
+		)
+		
+		val map = mapInstance ?: return
         val h = mapView.height
         val w = mapView.width
         if (h <= 0) return
@@ -450,6 +482,13 @@ fun MapScreen(
                     0,
                     0
                 )
+				/*
+				map.setPadding(
+					safeArea.left,
+					safeArea.top,
+					safeArea.right,
+					safeArea.bottom
+				)*/
 
                 try {
                     map.locationComponent.applyStyle(

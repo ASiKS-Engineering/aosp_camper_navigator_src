@@ -69,8 +69,6 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_NAVIGATION_UI_MODE =
             "com.example.campernavigator.extra.NAVIGATION_UI_MODE"
 
-        const val EXTRA_SHOW_MENU = "com.example.campernavigator.extra.SHOW_MENU"
-
         private const val NAVIGATION_STATE_PREFS = "navigation_state"
         private const val KEY_LAST_UI_MODE = "last_ui_mode"
 
@@ -327,45 +325,37 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun applyNavigationIntent(intent: Intent?) {
-        showSettingsMenu = intent?.getBooleanExtra(EXTRA_SHOW_MENU, false) == true
+	private fun applyNavigationIntent(intent: Intent?) {
 
-        when (intent?.getStringExtra(EXTRA_NAVIGATION_UI_MODE)) {
-            MODE_HOME -> setNavigationUiMode(MODE_HOME)
-            MODE_FULLSCREEN -> setNavigationUiMode(MODE_FULLSCREEN)
-            else -> {
-                val lastMode = getSharedPreferences(NAVIGATION_STATE_PREFS, MODE_PRIVATE)
-                    .getString(KEY_LAST_UI_MODE, MODE_HOME) ?: MODE_HOME
-                setNavigationUiMode(lastMode)
-            }
-        }
-    }
+		when (intent?.getStringExtra(EXTRA_NAVIGATION_UI_MODE)) {
 
-    private fun setNavigationUiMode(mode: String) {
-        getSharedPreferences(NAVIGATION_STATE_PREFS, MODE_PRIVATE)
-            .edit()
-            .putString(KEY_LAST_UI_MODE, mode)
-            .apply()
-        
-        val uiMode = if (mode == MODE_FULLSCREEN) NavigationUiMode.FULLSCREEN else NavigationUiMode.HOME
-        mapViewModel?.setNavigationUiMode(uiMode)
-        
-        // Update window management states
-        when (mode) {
-            MODE_HOME -> {
-                FileLogger.log("MainActivity: setNavigationUiMode -> HOME: Launcher coming to foreground")
-                mapViewModel?.setLauncherInForeground(true)
-                mapViewModel?.setMapVisible(true)  // Map still visible behind launcher
-                isInHomeMode = true
-            }
-            MODE_FULLSCREEN -> {
-                FileLogger.log("MainActivity: setNavigationUiMode -> FULLSCREEN: Map in full foreground")
-                mapViewModel?.setLauncherInForeground(false)
-                mapViewModel?.setMapVisible(true)  // Map is fully visible
-                isInHomeMode = false
-            }
-        }
-    }
+			MODE_HOME -> {
+				setNavigationUiMode(MODE_HOME)
+			}
+
+			MODE_FULLSCREEN -> {
+				setNavigationUiMode(MODE_FULLSCREEN)
+			}
+
+			else -> {
+				// Kein lokaler persistierter Mode mehr.
+				// Der aktuelle Mode kommt vom CamperNavigatorService.
+			}
+		}
+	}
+
+	private fun setNavigationUiMode(mode: String) {
+		val uiMode =
+			if (mode == MODE_FULLSCREEN) {
+				NavigationUiMode.FULLSCREEN
+			} else {
+				NavigationUiMode.HOME
+			}
+
+		mapViewModel?.setNavigationUiMode(uiMode)
+
+		isInHomeMode = mode == MODE_HOME
+	}
 
     private fun configureWindowForMultiWindow() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -391,22 +381,10 @@ class MainActivity : ComponentActivity() {
             // This activity always runs embedded in CarLauncher's TaskView. Visibility is
             // controlled exclusively by the host via z-order/ACTION_NAVIGATION_UI_MODE_CHANGED;
             // never call moveTaskToBack() here or the embedded task gets hidden permanently.
-            isInHomeMode = true
             setNavigationUiMode(MODE_HOME)
 
             return true
         }
         return super.onKeyDown(keyCode, event)
-    }
-
-    fun bringTaskToFront(context: Context) {
-        val packageName = context.packageName
-        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        am.getRunningTasks(Int.MAX_VALUE).forEach { taskInfo ->
-            if (taskInfo.topActivity?.packageName == packageName) {
-                am.moveTaskToFront(taskInfo.id, 0)
-                return
-            }
-        }
     }
 }
