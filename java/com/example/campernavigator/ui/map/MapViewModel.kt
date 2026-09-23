@@ -142,7 +142,8 @@ data class MapUiState(
     val vehicleImportState: DownloadState = DownloadState.Idle,
 	val navigationUiMode: NavigationUiMode = NavigationUiMode.HOME,
 	val isCameraTracking: Boolean = true,
-	val isMapVisible: Boolean = true
+	val isMapVisible: Boolean = true,
+    val windowZOrder: Int = 0
 )
 
 enum class MapMode { DAY, NIGHT, AUTO }

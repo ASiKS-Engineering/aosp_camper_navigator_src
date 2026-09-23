@@ -442,17 +442,17 @@ fun MapScreen(
     }
 
     fun updateMapPadding(isOverview: Boolean = false) {
-        val safeArea = calculateNavigationSafeArea(
-			uiState.navigationUiMode,
-			w,
-			h
-		)
-		
 		val map = mapInstance ?: return
         val h = mapView.height
         val w = mapView.width
         if (h <= 0) return
-        
+
+        val safeArea = calculateNavigationSafeArea(
+            uiState.navigationUiMode,
+            w,
+            h
+        )
+
         // In overview mode (route preview) we use full screen
         if (isOverview) {
             map.setPadding(0, 0, 0, 0)
