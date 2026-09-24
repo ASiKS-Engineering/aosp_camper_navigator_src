@@ -141,9 +141,7 @@ data class MapUiState(
     val installedVehicleIds: Set<String> = emptySet(),
     val vehicleImportState: DownloadState = DownloadState.Idle,
 	val navigationUiMode: NavigationUiMode = NavigationUiMode.HOME,
-	val isCameraTracking: Boolean = true,
-	val isMapVisible: Boolean = true,
-    val windowZOrder: Int = 0
+    val isCameraTracking: Boolean = true
 )
 
 enum class MapMode { DAY, NIGHT, AUTO }
@@ -550,18 +548,6 @@ class MapViewModel(
         FileLogger.log("MapViewModel: navigationUiMode changed to $mode")
         _uiState.update {
             it.copy(navigationUiMode = mode)
-        }
-    }
-    fun setMapVisible(visible: Boolean) {
-        FileLogger.log("MapViewModel: Map visibility changed to $visible")
-        _uiState.update {
-            it.copy(isMapVisible = visible)
-        }
-    }
-    fun setWindowZOrder(zOrder: Int) {
-        FileLogger.log("MapViewModel: Window z-order changed to $zOrder")
-        _uiState.update {
-            it.copy(windowZOrder = zOrder)
         }
     }
     fun setCameraTracking(active: Boolean) { _uiState.update { it.copy(isCameraTracking = active) } }

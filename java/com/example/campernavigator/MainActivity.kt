@@ -1,7 +1,6 @@
 package com.example.campernavigator
 
 import android.Manifest
-import android.app.ActivityManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -13,9 +12,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
-import android.view.KeyEvent
 import android.view.WindowManager
-import java.io.File
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -38,7 +35,6 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.campernavigator.data.SearchRepository
 import com.example.campernavigator.data.TrafficRepository
-import com.example.campernavigator.overlay.AudioOverlayManager
 import com.example.campernavigator.service.FakeRoutingService
 import com.example.campernavigator.service.LocationProviderFactory
 import com.example.campernavigator.service.VoiceService
@@ -54,20 +50,14 @@ import kotlinx.coroutines.delay
 class MainActivity : ComponentActivity() {
 
     companion object {
-        const val ACTION_SET_CAMPER_NAVIGATOR_MODE =
-            "com.asiks.camper.navigator.action.SET_MODE"
-
-        const val EXTRA_CAMER_NAVIGATOR_MODE =
-            "com.asiks.camper.navigator.extra.MODE"
-
-        const val EXTRA_APPLY_SCREEN_TRANSITION =
-            "com.asiks.camper.navigator.extra.APPLY_SCREEN_TRANSITION"
-
         const val ACTION_NAVIGATION_UI_MODE_CHANGED =
             "com.example.campernavigator.action.NAVIGATION_UI_MODE_CHANGED"
 
         const val EXTRA_NAVIGATION_UI_MODE =
             "com.example.campernavigator.extra.NAVIGATION_UI_MODE"
+
+        const val EXTRA_SHOW_MENU =
+            "com.example.campernavigator.extra.SHOW_MENU"
 
         const val MODE_HOME = "HOME"
         const val MODE_FULLSCREEN = "FULLSCREEN"
@@ -75,7 +65,6 @@ class MainActivity : ComponentActivity() {
 
     private var mapViewModel: MapViewModel? = null
     private var showSettingsMenu by mutableStateOf(false)
-    private var audioOverlayManager: AudioOverlayManager? = null
     private var isInHomeMode = false
 
     private val navigationUiModeReceiver = object : BroadcastReceiver() {
@@ -108,13 +97,14 @@ class MainActivity : ComponentActivity() {
         FileLogger.init(applicationContext)
         NavigatorRuntime.initialize(applicationContext)
         FileLogger.log("!!! CamperNavigator Boot - MainActivity - Version 1.2.0 !!!")
+        FileLogger.log(
+            "MainActivity: onCreate, initial mode extra = " +
+                    (intent?.getStringExtra(EXTRA_NAVIGATION_UI_MODE) ?: "<none>")
+        )
 
         window.colorMode = ActivityInfo.COLOR_MODE_DEFAULT
         installSplashScreen()
         super.onCreate(savedInstanceState)
-
-        // Initialize overlay manager
-        audioOverlayManager = AudioOverlayManager(applicationContext)
 
         // Configure window for proper multi-window rendering
         configureWindowForMultiWindow()
@@ -129,6 +119,7 @@ class MainActivity : ComponentActivity() {
             IntentFilter(ACTION_NAVIGATION_UI_MODE_CHANGED),
             ContextCompat.RECEIVER_EXPORTED
         )
+        FileLogger.log("MainActivity: navigation mode receiver registered")
 
         locationPermissionRequest.launch(
             arrayOf(
@@ -239,6 +230,10 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
 
+        FileLogger.log(
+            "MainActivity: onNewIntent, mode extra = " +
+                    (intent.getStringExtra(EXTRA_NAVIGATION_UI_MODE) ?: "<none>")
+        )
         applyNavigationIntent(intent)
     }
 
@@ -259,10 +254,6 @@ class MainActivity : ComponentActivity() {
             unregisterReceiver(navigationUiModeReceiver)
         } catch (_: Exception) {
         }
-        
-        // Clean up overlay manager
-        audioOverlayManager?.cleanup()
-        FileLogger.log("MainActivity: onDestroy - AudioOverlayManager cleaned up")
     }
 
     private fun checkGpsSettings() {
@@ -299,9 +290,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-	private fun applyNavigationIntent(intent: Intent?) {
+    private fun applyNavigationIntent(intent: Intent?) {
+        showSettingsMenu = intent?.getBooleanExtra(EXTRA_SHOW_MENU, false) == true
 
-		when (intent?.getStringExtra(EXTRA_NAVIGATION_UI_MODE)) {
+        FileLogger.log(
+            "MainActivity: applyNavigationIntent showSettingsMenu=$showSettingsMenu, " +
+                    "mode=${intent?.getStringExtra(EXTRA_NAVIGATION_UI_MODE) ?: "<none>"}"
+        )
+
+        when (intent?.getStringExtra(EXTRA_NAVIGATION_UI_MODE)) {
 
 			MODE_HOME -> {
 				setNavigationUiMode(MODE_HOME)
@@ -312,13 +309,13 @@ class MainActivity : ComponentActivity() {
 			}
 
 			else -> {
-				// Kein lokaler persistierter Mode mehr.
-				// Der aktuelle Mode kommt vom CamperNavigatorService.
+                setNavigationUiMode(MODE_HOME)
 			}
 		}
 	}
 
 	private fun setNavigationUiMode(mode: String) {
+        FileLogger.log("MainActivity: setNavigationUiMode($mode)")
 		val uiMode =
 			if (mode == MODE_FULLSCREEN) {
 				NavigationUiMode.FULLSCREEN

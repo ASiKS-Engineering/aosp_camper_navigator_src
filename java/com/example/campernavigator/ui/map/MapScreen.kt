@@ -140,6 +140,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -312,6 +313,17 @@ fun MapScreen(
 		val bottom: Int = 0
 	)
 
+    fun homeModePaddingForDisplay(width: Int, height: Int): Pair<Int, Int> {
+        return if (width == 1024 && height == 600) {
+            // Tuned for the current landscape display: 1024x600.
+            // Keep the map visually fullscreen while reserving a stable region for the
+            // transparent launcher/system UI overlays.
+            190 to 110
+        } else {
+            ((width * 0.18f).roundToInt()) to ((height * 0.20f).roundToInt())
+        }
+    }
+
 	fun calculateNavigationSafeArea(
 		mode: NavigationUiMode,
 		width: Int,
@@ -319,9 +331,10 @@ fun MapScreen(
 	): NavigationSafeArea {
 		return when (mode) {
 			NavigationUiMode.HOME -> {
+				val homePadding = homeModePaddingForDisplay(width, height)
 				NavigationSafeArea(
-					left = (width * 0.18f).roundToInt(),
-					top = (height * 0.20f).roundToInt()
+					left = homePadding.first,
+					top = homePadding.second
 				)
 			}
 
@@ -465,15 +478,17 @@ fun MapScreen(
         when (uiState.navigationUiMode) {
 
             NavigationUiMode.HOME -> {
+                Log.d(
+                    "MapScreen",
+                    "updateMapPadding: HOME on ${w}x${h}, launcher overlays reserved"
+                )
 
                 // Map stays physically fullscreen.
                 // Only the camera/CCP is shifted to make room
                 // for the CarLauncher overlay.
-                val leftPadding =
-                    (w * 0.18f).roundToInt()
-
-                val topPadding =
-                    (h * 0.20f).roundToInt()
+                val homePadding = homeModePaddingForDisplay(w, h)
+                val leftPadding = homePadding.first
+                val topPadding = homePadding.second
 
                 // Update map padding for FULLSCREEN mode while keeping visibility
                 map.setPadding(
@@ -482,13 +497,13 @@ fun MapScreen(
                     0,
                     0
                 )
-				/*
-				map.setPadding(
-					safeArea.left,
-					safeArea.top,
-					safeArea.right,
-					safeArea.bottom
-				)*/
+                /*
+                map.setPadding(
+                    safeArea.left,
+                    safeArea.top,
+                    safeArea.right,
+                    safeArea.bottom
+                )*/
 
                 try {
                     map.locationComponent.applyStyle(
@@ -504,6 +519,10 @@ fun MapScreen(
             }
 
             NavigationUiMode.FULLSCREEN -> {
+                Log.d(
+                    "MapScreen",
+                    "updateMapPadding: FULLSCREEN on ${w}x${h}, map gets full touch area"
+                )
                 map.setPadding(
                     0,
                     0,
@@ -674,6 +693,7 @@ fun MapScreen(
                             android.util.Log.d("MapScreen", "Setze Initial-Stil (Online): $url")
                             map.setStyle(org.maplibre.android.maps.Style.Builder().fromUri(url)) { style ->
                                 FileLogger.log("MapScreen: Style loaded, Map is ready")
+                                Log.i("MapScreen", "Map ready with mode=${uiState.navigationUiMode}")
                                 updateMapPadding()
                                 enableLocation(map)
                                 setupRouteLayers(style)
@@ -713,6 +733,17 @@ fun MapScreen(
             modifier = Modifier.fillMaxSize(),
             update = { }
         )
+
+        if (uiState.navigationUiMode == NavigationUiMode.HOME) {
+            // HOME layout keeps the left launcher widget area non-interactive for the map.
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .fillMaxHeight()
+                    .fillMaxWidth(0.33f)
+                    .pointerInteropFilter { true }
+            )
+        }
 
         // --- NEW AUTOMOTIVE LAYOUT ---
         if (uiState.navigationUiMode == NavigationUiMode.FULLSCREEN) {
@@ -2537,8 +2568,7 @@ fun MapScreen(
     LaunchedEffect(uiState.navigationUiMode) {
         Log.d(
             "MapScreen",
-            "UI State Change: navigationUiMode = " +
-                    "${uiState.navigationUiMode} -> Updating padding and menu"
+            "navigationUiMode=${uiState.navigationUiMode} -> update padding, touch area, and overlays"
         )
 
         updateMapPadding()
@@ -2581,6 +2611,7 @@ fun MapScreen(
         } else {
             val url = if (uiState.isNightMode) "https://tiles.openfreemap.org/styles/fiord" 
                      else "https://tiles.openfreemap.org/styles/liberty"
+                                     
             android.util.Log.d("MapScreen", "Wechsle zu Online-Stil (URI): $url")
             builder.fromUri(url)
         }
