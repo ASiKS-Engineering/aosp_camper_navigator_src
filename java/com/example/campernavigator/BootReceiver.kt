@@ -23,17 +23,9 @@ class BootReceiver : BroadcastReceiver() {
             // The product default permission grant must be present in the image.
         }
 
-        // Do NOT start MainActivity here as a standalone task: CarLauncher's TaskView already
-        // embeds it via its own maps intent. Starting it separately and then immediately
-        // requesting HOME below moves that freshly-started task straight to the back, where
-        // nothing ever brings it forward again (the embedded nav view stays invisible forever).
-        val launcherIntent = Intent(Intent.ACTION_MAIN).apply {
-            addCategory(Intent.CATEGORY_HOME)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        }
-
-        context.startActivity(launcherIntent)
+        // Do NOT start MainActivity or a HOME intent here. CarLauncher is already the running
+        // home and embeds MainActivity in its own TaskView. A HOME start at BOOT_COMPLETED
+        // brings the home root task to front and moves the embedded nav task to the back,
+        // where it stays hidden (empty nav area).
     }
 }
