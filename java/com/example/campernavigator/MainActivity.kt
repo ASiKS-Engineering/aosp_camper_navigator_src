@@ -187,16 +187,19 @@ class MainActivity : ComponentActivity() {
                 )
                 mapViewModel = mapViewModelInstance
 
-                val initialMode =
-					intent?.getStringExtra(EXTRA_NAVIGATION_UI_MODE)
-						?: MODE_HOME
-                mapViewModelInstance.setNavigationUiMode(
-                    if (initialMode == MODE_FULLSCREEN) {
-                        NavigationUiMode.FULLSCREEN
-                    } else {
-                        NavigationUiMode.HOME
-                    }
-                )
+                // Once only: a recomposition must not reset a mode set later by broadcast.
+                remember(mapViewModelInstance) {
+                    val initialMode =
+                        intent?.getStringExtra(EXTRA_NAVIGATION_UI_MODE)
+                            ?: MODE_HOME
+                    mapViewModelInstance.setNavigationUiMode(
+                        if (initialMode == MODE_FULLSCREEN) {
+                            NavigationUiMode.FULLSCREEN
+                        } else {
+                            NavigationUiMode.HOME
+                        }
+                    )
+                }
 
                 val uiState by mapViewModelInstance.uiState.collectAsState()
                 var forceHideSplash by remember { mutableStateOf(false) }
