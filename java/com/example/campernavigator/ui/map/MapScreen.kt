@@ -679,39 +679,7 @@ fun MapScreen(
                         map.setMaxZoomPreference(19.0) // Prevents zoom closer than approx 25m scale (was 20.0)
                         map.setMinZoomPreference(2.0)  // Verhindert zu weites Auszoomen
                         
-                        fun loadStyle() {
-                            // Wenn wir offline sind oder lokale Karten haben, lassen wir die Initialisierung 
-                            // durch den LaunchedEffect erledigen, um Dopplungen zu vermeiden.
-                            if (uiState.isOffline || (uiState.hasLocalTiles && uiState.activeRegionId != null)) {
-                                Log.d("MapScreen", "Initialer Load wird an LaunchedEffect delegiert (Offline=${uiState.isOffline})")
-                                return
-                            }
-
-                            val url = if (uiState.isNightMode) "https://tiles.openfreemap.org/styles/fiord" 
-                                     else "https://tiles.openfreemap.org/styles/liberty"
-                                     
-                            android.util.Log.d("MapScreen", "Setze Initial-Stil (Online): $url")
-                            map.setStyle(org.maplibre.android.maps.Style.Builder().fromUri(url)) { style ->
-                                FileLogger.log("MapScreen: Style loaded, Map is ready")
-                                Log.i("MapScreen", "Map ready with mode=${uiState.navigationUiMode}")
-                                updateMapPadding()
-                                enableLocation(map)
-                                setupRouteLayers(style)
-                                styleUpdateTrigger++
-                                viewModel.setMapReady(true)
-                            }
-                            
-                            // Monitor: Falls nach 4 Sekunden (Online) kein Stil da ist, brechen wir den Splash ab
-                            Handler(Looper.getMainLooper()).postDelayed({
-                                if (map.style == null) {
-                                    FileLogger.log("MapScreen: Style not loaded after 4s. Forcing ready state for UI.")
-                                    viewModel.setMapReady(true)
-                                }
-                            }, 4000)
-                        }
-
-                        loadStyle()
-
+                        // Der Stil wird vom LaunchedEffect (Key: mapInstance) gesetzt, auch offline.
                         map.addOnMapClickListener { point ->
                             // Klick nur verarbeiten, wenn Karte bereit ist UND wir reale Koordinaten haben
                             if (uiState.isMapReady && point.latitude > -1.0) {
@@ -2571,6 +2539,27 @@ fun MapScreen(
             "navigationUiMode=${uiState.navigationUiMode} -> update padding, touch area, and overlays"
         )
 
+        // Weiches Ueberblenden des Kartenrands statt hartem Sprung beim HOME/NAVI-Wechsel.
+        val map = mapInstance
+        val w = mapView.width
+        val h = mapView.height
+        if (map != null && uiState.isInitialZoomPerformed && w > 0 && h > 0) {
+            val from = map.padding
+            val to = calculateNavigationSafeArea(uiState.navigationUiMode, w, h)
+            androidx.compose.animation.core.animate(
+                initialValue = 0f,
+                targetValue = 1f,
+                animationSpec = androidx.compose.animation.core.tween(300)
+            ) { f, _ ->
+                map.setPadding(
+                    (from[0] + (to.left - from[0]) * f).toInt(),
+                    (from[1] + (to.top - from[1]) * f).toInt(),
+                    0,
+                    0
+                )
+            }
+        }
+
         updateMapPadding()
     }
 
@@ -2585,7 +2574,7 @@ fun MapScreen(
     }
 
     // Map Style Effect (Night Mode / Local Tiles / Offline Fallback)
-    LaunchedEffect(uiState.isNightMode, uiState.hasLocalTiles, uiState.activeRegionId, uiState.isOffline) {
+    LaunchedEffect(mapInstance, uiState.isNightMode, uiState.hasLocalTiles, uiState.activeRegionId, uiState.isOffline) {
         val map = mapInstance ?: return@LaunchedEffect
         
         // Wenn wir offline sind und keine aktiven lokalen Kacheln haben, 
@@ -2616,13 +2605,34 @@ fun MapScreen(
             builder.fromUri(url)
         }
             
+        var styleLoaded = false
         map.setStyle(builder) { style ->
+            styleLoaded = true
             Log.i("MapScreen", "Stil erfolgreich gesetzt (Offline=$isOfflineMode)")
             updateMapPadding()
             enableLocation(map)
             setupRouteLayers(style)
             styleUpdateTrigger++
             viewModel.setMapReady(true)
+        }
+
+        // Ohne Netz und ohne Kartendaten darf der Start nicht an einem haengenden Stil scheitern.
+        delay(4000)
+        if (!styleLoaded) {
+            if (!isOfflineMode) {
+                FileLogger.log("MapScreen: Online style not loaded after 4s. Forcing ready state for UI.")
+                viewModel.setMapReady(true)
+                return@LaunchedEffect
+            }
+            FileLogger.log("MapScreen: Offline style not loaded after 4s. Using plain background style.")
+            map.setStyle(Style.Builder().fromJson("""{"version": 8, "sources": {}, "layers": [{"id": "background", "type": "background", "paint": {"background-color": "#efede6"}}]}""")) { style ->
+                styleLoaded = true
+                updateMapPadding()
+                enableLocation(map)
+                setupRouteLayers(style)
+                styleUpdateTrigger++
+                viewModel.setMapReady(true)
+            }
         }
     }
 

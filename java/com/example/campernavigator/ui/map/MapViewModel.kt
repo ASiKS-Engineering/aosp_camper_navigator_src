@@ -3,7 +3,10 @@ package com.example.campernavigator.ui.map
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import android.hardware.camera2.CameraManager
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.location.GnssStatus
 import android.location.Location
 import android.location.LocationManager
@@ -39,6 +42,7 @@ import com.example.campernavigator.util.FileLogger
 import com.example.campernavigator.service.VehicleManager
 import com.example.campernavigator.service.VoiceService
 import com.example.campernavigator.util.GeoUtil
+import com.example.campernavigator.util.LastPositionStore
 import com.example.campernavigator.util.LocalTileRegistry
 import com.example.campernavigator.util.MBTilesManager
 import kotlinx.coroutines.Dispatchers
@@ -189,6 +193,16 @@ class MapViewModel(
 
     private var isLocationTrackingActive = false
 
+    private var lastRealFix: LatLng? = null
+    private var lastPositionSaveMillis = 0L
+    private val positionSaveIntervalMs = 60_000L
+
+    private val shutdownReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            lastRealFix?.let { LastPositionStore.save(graphHopperEngine.context, it, sync = true) }
+        }
+    }
+
     init {
         // 1. First scan all available data
         refreshInstalledRegions()
@@ -198,7 +212,21 @@ class MapViewModel(
 
         // 2. Load settings (including active vehicle)
         loadSettings()
-        
+
+        // Start from the last saved position (or Marienplatz) until the first real fix arrives
+        val startPosition = LastPositionStore.load(graphHopperEngine.context)
+        FileLogger.log("MapViewModel: Start position $startPosition")
+        _uiState.update { it.copy(
+            rawLocation = startPosition,
+            snappedLocation = startPosition,
+            isLocationDetermined = true
+        ) }
+        graphHopperEngine.context.applicationContext.registerReceiver(
+            shutdownReceiver,
+            IntentFilter(Intent.ACTION_SHUTDOWN),
+            Context.RECEIVER_NOT_EXPORTED
+        )
+
         startLocationTracking()
 
         // AUTO-LOAD MAP: If a finished map "MapPack_..." exists, load it immediately
@@ -318,7 +346,7 @@ class MapViewModel(
             // Wenn offline, brechen wir den Splash-Screen viel früher ab
             var elapsed = 0L
             val maxWait = 10000L
-            while (elapsed < maxWait && !_uiState.value.isLocationDetermined && !_uiState.value.forceExitSplash) {
+            while (elapsed < maxWait && !(_uiState.value.isLocationDetermined && _uiState.value.isMapReady) && !_uiState.value.forceExitSplash) {
                 val step = 500L
                 delay(step)
                 elapsed += step
@@ -386,7 +414,7 @@ class MapViewModel(
     }
 
     fun updateUserLocation(location: Location) {
-        if (!_uiState.value.isLocationDetermined) {
+        if (lastRealFix == null) {
             FileLogger.log("MapViewModel: FIRST FIX from ${location.provider}")
             _uiState.update { it.copy(isLocationDetermined = true) }
         }
@@ -396,6 +424,12 @@ class MapViewModel(
         val safeBearing = GeoUtil.normalizeBearing(location.bearing)
 
         val rawLatLng = LatLng(location.latitude, location.longitude)
+        lastRealFix = rawLatLng
+        // Backup for power loss without an ACTION_SHUTDOWN broadcast
+        if (lastGpsUpdateMillis - lastPositionSaveMillis > positionSaveIntervalMs) {
+            lastPositionSaveMillis = lastGpsUpdateMillis
+            LastPositionStore.save(graphHopperEngine.context, rawLatLng, sync = false)
+        }
         
         viewModelScope.launch(Dispatchers.Default) {
             val isActive = _uiState.value.activeRegionId != null && !_uiState.value.isLoading
@@ -643,5 +677,9 @@ class MapViewModel(
         super.onCleared()
         MBTilesManager.closeAll()
         if (isLocationTrackingActive) locationProvider.stopLocationUpdates()
+        try {
+            graphHopperEngine.context.applicationContext.unregisterReceiver(shutdownReceiver)
+        } catch (_: IllegalArgumentException) {
+        }
     }
 }
