@@ -44,6 +44,12 @@ class MapImportWorker(
     }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        try {
+            setForeground(getForegroundInfo())
+        } catch (e: Exception) {
+            FileLogger.log("MapImportWorker: Could not start foreground service: ${e.message}")
+        }
+
         val regionId = inputData.getString(KEY_REGION_ID) ?: "Map"
         val uriString = inputData.getString(KEY_URI) ?: return@withContext Result.failure()
         
@@ -53,10 +59,10 @@ class MapImportWorker(
         // MOVE tempZip to filesDir as cacheDir might have size quotas
         val tempZip = File(applicationContext.filesDir, "import_turbo.zip")
 
-        // 1. LOCK-MECHANISMUS
+        // 1. LOCK-MECHANISMUS: Abbrechen, falls bereits eine Instanz läuft
         if (lockFile.exists() && System.currentTimeMillis() - lockFile.lastModified() < 3600000) {
-            FileLogger.log("MapImportWorker: Import already running. Killing ghost worker.")
-            return@withContext Result.success() // NO output data -> ignored by UI
+            FileLogger.log("MapImportWorker: Import process already running. Killing duplicate worker.")
+            return@withContext Result.failure() // Nicht Result.success() aufrufen, da WorkManager sonst den Task als beendet markiert!
         }
         lockFile.createNewFile()
 

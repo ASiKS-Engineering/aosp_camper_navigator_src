@@ -44,6 +44,7 @@ object FileLogger {
                 }
             }
         } catch (e: Exception) {
+            logFile = null // Disable file logging if filesystem is read-only
             Log.e("FileLogger", "Write failed: ${e.message}")
         }
     }

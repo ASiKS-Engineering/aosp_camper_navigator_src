@@ -314,14 +314,12 @@ fun MapScreen(
 	)
 
     fun homeModePaddingForDisplay(width: Int, height: Int): Pair<Int, Int> {
-        return if (width == 1024 && height == 600) {
-            // Tuned for the current landscape display: 1024x600.
-            // Keep the map visually fullscreen while reserving a stable region for the
-            // transparent launcher/system UI overlays.
-            190 to 110
-        } else {
-            ((width * 0.18f).roundToInt()) to ((height * 0.20f).roundToInt())
-        }
+        // Reserve the left 1/3 (33%) of the screen for the launcher widget overlay.
+        // The map center and CCP will be horizontally centered in the right 2/3 of the display.
+        val leftPadding = (width * 0.33f).roundToInt()
+        // Position the CCP in the lower third (33% top padding -> focal point at 66.7% height)
+        val topPadding = (height * 0.33f).roundToInt()
+        return leftPadding to topPadding
     }
 
 	fun calculateNavigationSafeArea(
@@ -339,7 +337,10 @@ fun MapScreen(
 			}
 
 			NavigationUiMode.FULLSCREEN -> {
-				NavigationSafeArea()
+				NavigationSafeArea(
+					left = 0,
+					top = (height * 0.33f).roundToInt()
+				)
 			}
 		}
 	}
@@ -383,9 +384,9 @@ fun MapScreen(
 
     val snappedLocationEngine = remember { SnappedLocationEngine() }
 
-    fun buildLocationOptions(topPadding: Int): org.maplibre.android.location.LocationComponentOptions {
+    fun buildLocationOptions(leftPadding: Int = 0, topPadding: Int = 0): org.maplibre.android.location.LocationComponentOptions {
         return org.maplibre.android.location.LocationComponentOptions.builder(context)
-            .padding(intArrayOf(0, topPadding, 0, 0))
+            .padding(intArrayOf(leftPadding, topPadding, 0, 0))
             .accuracyAlpha(0f) // Hide gray circle
             .trackingAnimationDurationMultiplier(1.0f) // ENABLE SMOOTH GLIDING
             .maxZoomIconScale(1.2f) // Restore camper look
@@ -409,26 +410,31 @@ fun MapScreen(
 
         val locationComponent = map.locationComponent
         
-        val topPadding = when {
-            !uiState.isInitialZoomPerformed -> 0
+        val (leftPadding, topPadding) = when {
+            !uiState.isInitialZoomPerformed -> 0 to 0
 
             uiState.navigationUiMode == NavigationUiMode.HOME ->
-                if (mapView.height > 0) {
-                    (mapView.height * 0.20f).roundToInt()
+                if (mapView.width > 0 && mapView.height > 0) {
+                    homeModePaddingForDisplay(mapView.width, mapView.height)
                 } else {
-                    0
+                    0 to 0
                 }
 
-            NavigationUiMode.FULLSCREEN == uiState.navigationUiMode -> 0
+            NavigationUiMode.FULLSCREEN == uiState.navigationUiMode ->
+                if (mapView.height > 0) {
+                    0 to (mapView.height * 0.33f).roundToInt()
+                } else {
+                    0 to 0
+                }
 
-            else -> 0
+            else -> 0 to 0
         }
         
-        android.util.Log.d("MapScreen", "Aktiviere LocationComponent (Padding: $topPadding)")
+        android.util.Log.d("MapScreen", "Aktiviere LocationComponent (LeftPadding: $leftPadding, TopPadding: $topPadding)")
 
         val options = LocationComponentActivationOptions.builder(context, style)
             .locationEngine(snappedLocationEngine)
-            .locationComponentOptions(buildLocationOptions(topPadding))
+            .locationComponentOptions(buildLocationOptions(leftPadding, topPadding))
             .build()
         
         locationComponent.activateLocationComponent(options)
@@ -470,7 +476,7 @@ fun MapScreen(
         if (isOverview) {
             map.setPadding(0, 0, 0, 0)
             try {
-                map.locationComponent.applyStyle(buildLocationOptions(0))
+                map.locationComponent.applyStyle(buildLocationOptions(0, 0))
             } catch (e: Exception) {}
             return
         }
@@ -497,17 +503,10 @@ fun MapScreen(
                     0,
                     0
                 )
-                /*
-                map.setPadding(
-                    safeArea.left,
-                    safeArea.top,
-                    safeArea.right,
-                    safeArea.bottom
-                )*/
 
                 try {
                     map.locationComponent.applyStyle(
-                        buildLocationOptions(topPadding)
+                        buildLocationOptions(leftPadding, topPadding)
                     )
                 } catch (e: Exception) {
                 }
@@ -521,18 +520,20 @@ fun MapScreen(
             NavigationUiMode.FULLSCREEN -> {
                 Log.d(
                     "MapScreen",
-                    "updateMapPadding: FULLSCREEN on ${w}x${h}, map gets full touch area"
+                    "updateMapPadding: FULLSCREEN on ${w}x${h}, CCP in lower third"
                 )
+                val topPadding = (h * 0.33f).roundToInt()
+
                 map.setPadding(
                     0,
-                    0,
+                    topPadding,
                     0,
                     0
                 )
 
                 try {
                     map.locationComponent.applyStyle(
-                        buildLocationOptions(0)
+                        buildLocationOptions(0, topPadding)
                     )
                  } catch (e: Exception) {
                        // Ignore while map/location component is initializing.
@@ -715,95 +716,6 @@ fun MapScreen(
 
         // --- NEW AUTOMOTIVE LAYOUT ---
         if (uiState.navigationUiMode == NavigationUiMode.FULLSCREEN) {
-            // Top Status Bar
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(40.dp)
-                    .align(Alignment.TopCenter),
-                color = Color.Black.copy(alpha = 0.6f)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    // Arrival time (ETA) during navigation
-                    if (uiState.isNavigating && uiState.remainingTime != null) {
-                        val arrivalTime = currentTime + uiState.remainingTime!!
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Flag,
-                                contentDescription = null,
-                                tint = Color(0xFF8BC34A),
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = formatArrivalTime(arrivalTime),
-                                color = Color.White,
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        Spacer(Modifier.width(32.dp))
-                    }
-
-                    if (uiState.isOffline) {
-                        Icon(
-                            imageVector = Icons.Default.SignalCellularAlt,
-                            contentDescription = "Offline",
-                            tint = Color(0xFFE57373), // Red
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            "OFFLINE",
-                            color = Color(0xFFE57373),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(Modifier.width(16.dp))
-                    }
-
-                    Icon(Icons.Default.Wifi, null, tint = if (uiState.isOffline) Color.White.copy(alpha = 0.3f) else Color.White, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(8.dp))
-                    
-                    // Satellite Count
-                    if (uiState.satelliteCount != null) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Default.SatelliteAlt, 
-                                null, 
-                                tint = Color.White, 
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(Modifier.width(2.dp))
-                            Text(
-                                "${uiState.satelliteCount}", 
-                                color = Color.White, 
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        Spacer(Modifier.width(8.dp))
-                    }
-
-                    Icon(Icons.Default.SignalCellularAlt, null, tint = Color.White, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(16.dp))
-                    Text("ARABELLA", color = Color.White, style = MaterialTheme.typography.labelMedium)
-                    Spacer(Modifier.width(16.dp))
-                    Icon(Icons.AutoMirrored.Filled.VolumeUp, null, tint = Color.White, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(16.dp))
-                    Text(
-                        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(currentTime)),
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
             // --- LEFT ROUTE PROGRESS BAR ---
             if (uiState.isNavigating && uiState.currentRoute != null) {
                 val totalDist = uiState.currentRoute?.distance ?: 1.0
@@ -812,7 +724,7 @@ fun MapScreen(
                 
                 Surface(
                     modifier = Modifier
-                        .padding(start = 8.dp, top = 56.dp, bottom = 16.dp) // From top to bottom edge of menu
+                        .padding(start = 8.dp, top = 16.dp, bottom = 16.dp)
                         .width(32.dp)
                         .align(Alignment.TopStart),
                     shape = RoundedCornerShape(16.dp),
@@ -1057,7 +969,7 @@ fun MapScreen(
             // --- SPEED INDICATOR (Top Left) ---
             Column(
                 modifier = Modifier
-                    .padding(top = 56.dp, start = 48.dp) // Shifted slightly to the right (menu start)
+                    .padding(top = 16.dp, start = 48.dp)
                     .align(Alignment.TopStart)
             ) {
                 val speedValue = when {
@@ -1303,7 +1215,7 @@ fun MapScreen(
         // Route Card
         AnimatedVisibility(
             visible = uiState.currentRoute != null && !uiState.isNavigating, 
-            modifier = Modifier.align(Alignment.TopEnd).padding(top = 56.dp, end = 16.dp)
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = 16.dp, end = 16.dp)
         ) {
             uiState.currentRoute?.let { route ->
                 RouteSummaryCard(
@@ -1318,8 +1230,8 @@ fun MapScreen(
         if (uiState.isNavigating && uiState.currentInstruction != null) {
             Surface(
                 modifier = Modifier
-                    .padding(top = 56.dp, end = 16.dp)
-                    .width(340.dp) // Slightly wider for better text flow
+                    .padding(top = 16.dp, end = 16.dp)
+                    .width(340.dp)
                     .align(Alignment.TopEnd),
                 shape = RoundedCornerShape(12.dp),
                 color = Color.Black.copy(alpha = 0.85f), // Darker for better contrast
@@ -2539,24 +2451,46 @@ fun MapScreen(
             "navigationUiMode=${uiState.navigationUiMode} -> update padding, touch area, and overlays"
         )
 
-        // Weiches Ueberblenden des Kartenrands statt hartem Sprung beim HOME/NAVI-Wechsel.
+        if (uiState.navigationUiMode == NavigationUiMode.HOME) {
+            // Im HOME-Modus alle Overlays/Menüs schließen, damit die Karte mit CCP direkt sichtbar ist
+            isMenuOpen = false
+            isPanelExpanded = false
+            isMapManagementOpen = false
+            isFavoritesOpen = false
+            isCampingSubmenuOpen = false
+            isSearchOverlayVisible = false
+            isSettingHome = false
+            showMapClickDialog = null
+        }
+
+        // Sanftes, langsames Ueberblenden der Karte und des CCP beim HOME/NAVI-Wechsel
         val map = mapInstance
         val w = mapView.width
         val h = mapView.height
         if (map != null && uiState.isInitialZoomPerformed && w > 0 && h > 0) {
             val from = map.padding
             val to = calculateNavigationSafeArea(uiState.navigationUiMode, w, h)
-            androidx.compose.animation.core.animate(
-                initialValue = 0f,
-                targetValue = 1f,
-                animationSpec = androidx.compose.animation.core.tween(300)
-            ) { f, _ ->
-                map.setPadding(
-                    (from[0] + (to.left - from[0]) * f).toInt(),
-                    (from[1] + (to.top - from[1]) * f).toInt(),
-                    0,
-                    0
-                )
+            val startLeft = from[0]
+            val startTop = from[1]
+            val targetLeft = to.left
+            val targetTop = to.top
+
+            if (startLeft != targetLeft || startTop != targetTop) {
+                androidx.compose.animation.core.animate(
+                    initialValue = 0f,
+                    targetValue = 1f,
+                    animationSpec = androidx.compose.animation.core.tween(
+                        durationMillis = 650,
+                        easing = androidx.compose.animation.core.FastOutSlowInEasing
+                    )
+                ) { f, _ ->
+                    val curLeft = (startLeft + (targetLeft - startLeft) * f).toInt()
+                    val curTop = (startTop + (targetTop - startTop) * f).toInt()
+                    map.setPadding(curLeft, curTop, 0, 0)
+                    try {
+                        map.locationComponent.applyStyle(buildLocationOptions(curLeft, curTop))
+                    } catch (e: Exception) {}
+                }
             }
         }
 
