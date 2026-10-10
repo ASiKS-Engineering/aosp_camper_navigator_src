@@ -119,6 +119,8 @@ data class MapUiState(
     val isInitialZoomPerformed: Boolean = false,
     val forceExitSplash: Boolean = false,
     val isOffline: Boolean = false,
+    val onlineMapUnavailable: Boolean = false,
+    val onlineTilesReady: Boolean = false,
     val isValidatingFile: Boolean = false,
     val fileValidationError: String? = null,
     val lastRoutePointIndex: Int = 0,
@@ -133,6 +135,7 @@ data class MapUiState(
     val savedWaypoints: List<LatLng> = emptyList(),
     val hasLocalTiles: Boolean = false,
     val localMBTilesPath: String? = null,
+    val tilesRegionId: String? = null,
     val isTransitioningFromDemo: Boolean = false,
     val currentManeuverStreet: String? = null,
     val currentRoundaboutExit: Int? = null,
@@ -203,19 +206,107 @@ class MapViewModel(
         }
     }
 
+    private fun checkInitialNetworkStatus(context: Context): Boolean {
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+            val activeNetwork = cm?.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(activeNetwork) ?: return false
+            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun setupFallbackAssets() {
+        try {
+            val context = graphHopperEngine.context
+            val fallbackFile = File(context.filesDir, "fallback_marienplatz.mbtiles")
+            // Nach einem App-Update neu extrahieren, damit eine aktualisierte gebuendelte Karte wirksam wird
+            val installedAt = context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime
+            if (!fallbackFile.exists() || fallbackFile.lastModified() < installedAt) {
+                val assetList = context.assets.list("") ?: emptyArray()
+                val mbtilesAsset = assetList.find { it.endsWith(".mbtiles", ignoreCase = true) }
+                if (mbtilesAsset != null) {
+                    val tmpFile = File(context.filesDir, "fallback_marienplatz.mbtiles.tmp")
+                    context.assets.open(mbtilesAsset).use { input ->
+                        tmpFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    if (!tmpFile.renameTo(fallbackFile)) {
+                        tmpFile.delete()
+                        throw java.io.IOException("Could not replace $fallbackFile")
+                    }
+                    FileLogger.log("MapViewModel: Extracted bundled fallback MBTiles $mbtilesAsset")
+                }
+            }
+            if (fallbackFile.exists()) {
+                LocalTileRegistry.register("fallback", fallbackFile.absolutePath)
+                LocalTileRegistry.register("marienplatz", fallbackFile.absolutePath)
+            }
+        } catch (e: Exception) {
+            FileLogger.log("MapViewModel: Fallback asset check: ${e.message}")
+        }
+    }
+
+    // Keine lokalen Kartendaten und online nichts abrufbar (kein Netz oder Kartenserver nicht erreichbar)
+    private val forceFallbackMarienplatz: Boolean
+        get() {
+            val hasLocalData = NavigatorRuntime.findWarmRegionId(graphHopperEngine.context) != null
+            val state = _uiState.value
+            return !hasLocalData && (state.isOffline || state.onlineMapUnavailable) && lastRealFix == null
+        }
+
+    /** Marienplatz wenn keine Kartendaten verfuegbar sind, sonst zuletzt gespeicherte Position (bis zum ersten Fix). */
+    private fun applyStartPosition() {
+        if (lastRealFix != null) return
+        val position = if (forceFallbackMarienplatz) {
+            LastPositionStore.DEFAULT
+        } else {
+            LastPositionStore.load(graphHopperEngine.context)
+        }
+        _uiState.update {
+            if (it.rawLocation == position && it.snappedLocation == position) it
+            else it.copy(rawLocation = position, snappedLocation = position)
+        }
+    }
+
+    fun setOnlineMapUnavailable(unavailable: Boolean) {
+        if (_uiState.value.onlineMapUnavailable == unavailable) return
+        FileLogger.log("MapViewModel: onlineMapUnavailable=$unavailable")
+        _uiState.update { it.copy(onlineMapUnavailable = unavailable) }
+        applyStartPosition()
+    }
+
     init {
-        // 1. First scan all available data
+        // 1. Initial network status check before initial Compose frame renders
+        val initialOffline = !checkInitialNetworkStatus(graphHopperEngine.context)
+        _uiState.update { it.copy(isOffline = initialOffline) }
+
+        setupFallbackAssets()
+
+        // 2. Scan all available data
         refreshInstalledRegions()
         vehicleManager.cleanUpOrphanedFolders()
         refreshInstalledVehicles()
         refreshAvailableCameras()
 
-        // 2. Load settings (including active vehicle)
+        // 3. Load settings (including active vehicle)
         loadSettings()
 
-        // Start from the last saved position (or Marienplatz) until the first real fix arrives
-        val startPosition = LastPositionStore.load(graphHopperEngine.context)
-        FileLogger.log("MapViewModel: Start position $startPosition")
+        // 4. Start from last saved position (or default) until the first real fix arrives
+        // Wenn keine Kartendaten lokal vorhanden sind und online keine Daten abgerufen werden können (offline),
+        // wird immer Marienplatz angezeigt, unabhängig von realer oder zuletzt gespeicherter GPS-Position.
+        val hasLocalData = NavigatorRuntime.findWarmRegionId(graphHopperEngine.context) != null
+        val startPosition = if (forceFallbackMarienplatz) {
+            LastPositionStore.DEFAULT.also {
+                FileLogger.log("MapViewModel: No local map data and offline -> forcing start position to Marienplatz")
+            }
+        } else {
+            LastPositionStore.load(graphHopperEngine.context)
+        }
+
+        FileLogger.log("MapViewModel: Start position $startPosition (Offline=$initialOffline, HasLocalData=$hasLocalData)")
         _uiState.update { it.copy(
             rawLocation = startPosition,
             snappedLocation = startPosition,
@@ -241,8 +332,24 @@ class MapViewModel(
 
         viewModelScope.launch {
             connectivityObserver?.observe()?.collect { status ->
-                _uiState.update { it.copy(isOffline = status != ConnectionStatus.Available) }
+                val offline = status != ConnectionStatus.Available
+                _uiState.update {
+                    if (it.isOffline == offline) it else it.copy(isOffline = offline, onlineMapUnavailable = false)
+                }
+                applyStartPosition()
             }
+        }
+
+        // Lokal starten; sobald Karte fertig und Netz da ist, einmalig auf "online nachladen" schalten.
+        viewModelScope.launch {
+            while (!(_uiState.value.isMapReady && !_uiState.value.isOffline)) delay(500)
+            delay(1500)
+            if (_uiState.value.isOffline) {
+                // Netz war nur kurz da: erneut warten.
+                while (!(_uiState.value.isMapReady && !_uiState.value.isOffline)) delay(500)
+            }
+            FileLogger.log("MapViewModel: Network available -> loading online tiles on top of local map")
+            _uiState.update { it.copy(onlineTilesReady = true) }
         }
 
         // --- Import observer (cleanup) ---
@@ -414,7 +521,13 @@ class MapViewModel(
     }
 
     fun updateUserLocation(location: Location) {
-        if (lastRealFix == null) {
+        if (forceFallbackMarienplatz) {
+            // Ignoriere echte GPS-Updates, wenn keine lokalen Kartendaten vorhanden und offline,
+            // damit die Karte fest auf Marienplatz fixiert bleibt und Kacheln dort geladen werden.
+            return
+        }
+        val isFirstFix = lastRealFix == null
+        if (isFirstFix) {
             FileLogger.log("MapViewModel: FIRST FIX from ${location.provider}")
             _uiState.update { it.copy(isLocationDetermined = true) }
         }
@@ -425,10 +538,10 @@ class MapViewModel(
 
         val rawLatLng = LatLng(location.latitude, location.longitude)
         lastRealFix = rawLatLng
-        // Backup for power loss without an ACTION_SHUTDOWN broadcast
-        if (lastGpsUpdateMillis - lastPositionSaveMillis > positionSaveIntervalMs) {
+        // Backup for power loss without an ACTION_SHUTDOWN broadcast (save immediately on first fix or every 10s)
+        if (isFirstFix || lastGpsUpdateMillis - lastPositionSaveMillis > 10_000L) {
             lastPositionSaveMillis = lastGpsUpdateMillis
-            LastPositionStore.save(graphHopperEngine.context, rawLatLng, sync = false)
+            LastPositionStore.save(graphHopperEngine.context, rawLatLng, sync = true)
         }
         
         viewModelScope.launch(Dispatchers.Default) {
@@ -619,38 +732,45 @@ class MapViewModel(
     private fun refreshInstalledVehicles() { _uiState.update { it.copy(installedVehicleIds = vehicleManager.getInstalledVehicles().toSet()) } }
 
     fun loadRegion(id: String) { viewModelScope.launch { initGraphHopper(id) } }
+
+    private fun registerLocalTiles(id: String) {
+        val ctx = graphHopperEngine.context
+        val dirs = listOfNotNull(
+            File(ctx.filesDir, "routing/$id"),
+            ctx.getExternalFilesDir(null)?.let { File(it, "routing/$id") }
+        )
+        dirs.forEach { dir ->
+            FileLogger.log("MapViewModel: Files in ${dir.absolutePath}: ${dir.list()?.joinToString(", ") ?: "none"}")
+        }
+
+        val mbtilesFile = dirs.firstNotNullOfOrNull { dir ->
+            dir.listFiles()?.find { it.isFile && it.name.endsWith(".mbtiles", ignoreCase = true) }
+        }
+
+        if (mbtilesFile != null) {
+            FileLogger.log("MapViewModel: Found local MBTiles at ${mbtilesFile.absolutePath} (${mbtilesFile.length() / 1024} KB)")
+            LocalTileRegistry.register(id, mbtilesFile.absolutePath)
+            _uiState.update { it.copy(hasLocalTiles = true, localMBTilesPath = mbtilesFile.absolutePath, tilesRegionId = id) }
+        } else {
+            FileLogger.log("MapViewModel: WARNING - No MBTiles found for region $id.", "ERROR")
+            _uiState.update { it.copy(hasLocalTiles = false, localMBTilesPath = null, tilesRegionId = null) }
+        }
+    }
     private suspend fun initGraphHopper(id: String) {
         if (isInitializingGraphHopper) return
         isInitializingGraphHopper = true
         _uiState.update { it.copy(isLoading = true, loadingMessage = "Lade Karte: $id...") }
         try {
             FileLogger.log("MapViewModel: Initializing GraphHopper for $id")
+            // Kacheln zuerst registrieren, damit die Karte auch bei fehlgeschlagenem Routing-Start angezeigt wird
+            registerLocalTiles(id)
             routingService = graphHopperEngine.init(
                 id,
                 _uiState.value.routingMode,
                 _uiState.value.activeVehicleId
             )
-            
-            // MBTiles Suche (Intern & Extern)
-            val internalDir = File(graphHopperEngine.context.filesDir, "routing/$id")
-            val externalDir = File(graphHopperEngine.context.getExternalFilesDir(null), "routing/$id")
-            val dirToSearch = if (internalDir.exists()) internalDir else externalDir
-            
-            val filesInDir = dirToSearch.list()?.joinToString(", ") ?: "none"
-            FileLogger.log("MapViewModel: Files in region dir: $filesInDir")
-            
-            val mbtilesFile = dirToSearch.listFiles()?.find { it.name.endsWith(".mbtiles") }
-            
-            if (mbtilesFile != null) {
-                FileLogger.log("MapViewModel: SUCCESS - Found local MBTiles at ${mbtilesFile.absolutePath}")
-                LocalTileRegistry.register(id, mbtilesFile.absolutePath)
-                saveSetting(KEY_ACTIVE_REGION, id)
-                _uiState.update { it.copy(activeRegionId = id, isLoading = false, hasLocalTiles = true, localMBTilesPath = mbtilesFile.absolutePath) }
-            } else {
-                FileLogger.log("MapViewModel: WARNING - No MBTiles found in $id. Using online fallback.", "ERROR")
-                saveSetting(KEY_ACTIVE_REGION, id)
-                _uiState.update { it.copy(activeRegionId = id, isLoading = false, hasLocalTiles = false) }
-            }
+            saveSetting(KEY_ACTIVE_REGION, id)
+            _uiState.update { it.copy(activeRegionId = id, isLoading = false) }
         } catch (e: Exception) {
             FileLogger.log("MapViewModel: GraphHopper initialization FAILED: ${e.message}", "ERROR")
             _uiState.update { it.copy(isLoading = false, showErrorDialog = e.message) }

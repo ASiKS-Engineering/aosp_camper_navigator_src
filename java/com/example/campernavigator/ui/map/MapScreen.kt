@@ -176,6 +176,8 @@ import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 
+private const val PADDING_TRANSITION_MS = 650L
+
 @Composable
 fun MapScreen(
     viewModel: MapViewModel,
@@ -384,13 +386,17 @@ fun MapScreen(
 
     val snappedLocationEngine = remember { SnappedLocationEngine() }
 
+    // Modus, fuer den das Padding zuletzt endgueltig gesetzt wurde. Weicht er vom aktuellen Modus ab, laeuft
+    // (oder startet gleich) die HOME/NAVI-Animation und updateMapPadding() darf das Padding nicht ueberschreiben.
+    val paddingAppliedMode = remember { arrayOfNulls<NavigationUiMode>(1) }
+
     fun buildLocationOptions(leftPadding: Int = 0, topPadding: Int = 0): org.maplibre.android.location.LocationComponentOptions {
         return org.maplibre.android.location.LocationComponentOptions.builder(context)
             .padding(intArrayOf(leftPadding, topPadding, 0, 0))
             .accuracyAlpha(0f) // Hide gray circle
             .trackingAnimationDurationMultiplier(1.0f) // ENABLE SMOOTH GLIDING
-            .maxZoomIconScale(1.2f) // Restore camper look
-            .minZoomIconScale(1.2f)
+            .maxZoomIconScale(1.0f) // Standard size
+            .minZoomIconScale(1.0f)
             .compassAnimationEnabled(false)
             .build()
     }
@@ -465,6 +471,11 @@ fun MapScreen(
         val h = mapView.height
         val w = mapView.width
         if (h <= 0) return
+        if (!isOverview) {
+            val applied = paddingAppliedMode[0]
+            if (applied != null && applied != uiState.navigationUiMode) return
+            paddingAppliedMode[0] = uiState.navigationUiMode
+        }
 
         val safeArea = calculateNavigationSafeArea(
             uiState.navigationUiMode,
@@ -668,9 +679,9 @@ fun MapScreen(
         AndroidView(
             factory = {
                 mapView.apply {
-                    // Auto update padding on layout changes
+                    // Auto update padding on layout changes (guarded during the HOME/NAVI animation)
                     addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-                         updateMapPadding()
+                        updateMapPadding()
                     }
 
                     getMapAsync { map ->
@@ -2476,24 +2487,36 @@ fun MapScreen(
             val targetTop = to.top
 
             if (startLeft != targetLeft || startTop != targetTop) {
-                androidx.compose.animation.core.animate(
-                    initialValue = 0f,
-                    targetValue = 1f,
-                    animationSpec = androidx.compose.animation.core.tween(
-                        durationMillis = 650,
-                        easing = androidx.compose.animation.core.FastOutSlowInEasing
+                FileLogger.log("MapScreen: padding transition ${uiState.navigationUiMode} ($startLeft,$startTop) -> ($targetLeft,$targetTop)")
+                val lc = map.locationComponent
+                val tracking = lc.isLocationComponentActivated && lc.cameraMode != CameraMode.NONE
+                if (tracking) {
+                    // Einzige Variante, die die Kamera auch ohne neuen GPS-Fix stetig verschiebt
+                    // (setPadding/applyStyle/paddingTo allein bewegen die Karte nicht sichtbar).
+                    lc.paddingWhileTracking(
+                        doubleArrayOf(targetLeft.toDouble(), targetTop.toDouble(), 0.0, 0.0),
+                        PADDING_TRANSITION_MS
                     )
-                ) { f, _ ->
-                    val curLeft = (startLeft + (targetLeft - startLeft) * f).toInt()
-                    val curTop = (startTop + (targetTop - startTop) * f).toInt()
-                    map.setPadding(curLeft, curTop, 0, 0)
-                    try {
-                        map.locationComponent.applyStyle(buildLocationOptions(curLeft, curTop))
-                    } catch (e: Exception) {}
+                    delay(PADDING_TRANSITION_MS + 50)
+                } else {
+                    androidx.compose.animation.core.animate(
+                        initialValue = 0f,
+                        targetValue = 1f,
+                        animationSpec = androidx.compose.animation.core.tween(
+                            durationMillis = PADDING_TRANSITION_MS.toInt(),
+                            easing = androidx.compose.animation.core.FastOutSlowInEasing
+                        )
+                    ) { f, _ ->
+                        val curLeft = (startLeft + (targetLeft - startLeft) * f).toInt()
+                        val curTop = (startTop + (targetTop - startTop) * f).toInt()
+                        map.setPadding(curLeft, curTop, 0, 0)
+                    }
                 }
             }
         }
 
+        // Erst jetzt gilt der neue Modus als angewendet (bei Abbruch durch einen neuen Wechsel bleibt der Guard aktiv).
+        paddingAppliedMode[0] = uiState.navigationUiMode
         updateMapPadding()
     }
 
@@ -2508,28 +2531,60 @@ fun MapScreen(
     }
 
     // Map Style Effect (Night Mode / Local Tiles / Offline Fallback)
-    LaunchedEffect(mapInstance, uiState.isNightMode, uiState.hasLocalTiles, uiState.activeRegionId, uiState.isOffline) {
+    // Der Offline-Stil haengt nicht vom reinen Netzstatus ab, sobald lokale Kacheln existieren:
+    // Key daher auf das Ergebnis, damit ein Netz-Wechsel beim Boot den Stil nicht mehrfach neu laedt.
+    val useOfflineStyle = uiState.isOffline || uiState.onlineMapUnavailable ||
+        (uiState.hasLocalTiles && uiState.localMBTilesPath != null)
+    LaunchedEffect(mapInstance, uiState.isNightMode, uiState.hasLocalTiles, uiState.activeRegionId, uiState.tilesRegionId, useOfflineStyle, uiState.onlineTilesReady) {
         val map = mapInstance ?: return@LaunchedEffect
+        // Erst nach dem lokalen Start online nachladen (Neuladen des Stils holt alle Kacheln erneut).
+        com.example.campernavigator.util.TileInterceptor.onlineEnabled = uiState.onlineTilesReady
         
-        // Wenn wir offline sind und keine aktiven lokalen Kacheln haben, 
-        // versuchen wir dennoch einen minimalen Stil zu laden, damit die App startet.
-        val regionId = uiState.activeRegionId ?: "fallback"
+        // Kacheln kommen nur aus einer Region mit MBTiles; sonst aus der gebuendelten Fallback-Karte.
+        val regionId = uiState.tilesRegionId ?: "fallback"
         
         val builder = Style.Builder()
-        val isOfflineMode = uiState.isOffline || (uiState.hasLocalTiles && uiState.localMBTilesPath != null)
+        val isOfflineMode = useOfflineStyle
+        val defaultBgColor = if (uiState.isNightMode) "#1e293b" else "#efede6"
         
+        // Zoomgrenze der Kacheldaten, damit MapLibre ueber den Daten nur hochskaliert statt falsche Kacheln anzufragen
+        val tilesPath = if (isOfflineMode) com.example.campernavigator.util.LocalTileRegistry.getPath(regionId) else null
+        val tileMinZoom = tilesPath?.let {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.example.campernavigator.util.MBTilesManager.getMinZoom(it)
+            }
+        } ?: 0
+        val tileMaxZoom = tilesPath?.let {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.example.campernavigator.util.MBTilesManager.getMaxZoom(it)
+            }
+        } ?: 14
+
         if (isOfflineMode) {
             try {
-                val template = context.assets.open("offline_style.json").bufferedReader().use { it.readText() }
-                val encodedRegion = android.net.Uri.encode(regionId)
-                val finalJson = template.replace("PLACEHOLDER_REGION", encodedRegion)
+                // Vollstaendiger Tag/Nacht-Stil (wie online), Sprites und Schriften kommen aus den Assets.
+                val styleAsset = if (uiState.isNightMode) "offline_map/style_night.json" else "offline_map/style_day.json"
+                val template = try {
+                    context.assets.open(styleAsset).bufferedReader().use { it.readText() }
+                } catch (e: java.io.IOException) {
+                    FileLogger.log("MapScreen: $styleAsset missing, using minimal offline_style.json")
+                    context.assets.open("offline_style.json").bufferedReader().use { it.readText() }
+                        .replace("#efede6", defaultBgColor)
+                }
+                val encodedRegion = android.net.Uri.encode(regionId) +
+                    // Eigene URL fuer die Online-Phase, damit MapLibre die lokal gecachten Kacheln nicht wiederverwendet.
+                    if (uiState.onlineTilesReady) "&src=online" else ""
+                FileLogger.log("MapScreen: Offline style region=$regionId path=$tilesPath minzoom=$tileMinZoom maxzoom=$tileMaxZoom")
+                val finalJson = template
+                    .replace("PLACEHOLDER_REGION", encodedRegion)
+                    .replace("PLACEHOLDER_MINZOOM", tileMinZoom.coerceIn(0, 22).toString())
+                    .replace("PLACEHOLDER_MAXZOOM", tileMaxZoom.coerceIn(0, 22).toString())
                 
                 Log.d("MapScreen", "Lade Offline-Stil (isOffline=${uiState.isOffline}, region=$regionId)")
                 builder.fromJson(finalJson)
             } catch (e: Exception) {
                 Log.e("MapScreen", "Error loading offline style, using simple background fallback", e)
-                // Minimalistisches JSON als absoluter Fallback
-                builder.fromJson("""{"version": 8, "sources": {}, "layers": [{"id": "background", "type": "background", "paint": {"background-color": "#efede6"}}]}""")
+                builder.fromJson("""{"version": 8, "sources": {}, "layers": [{"id": "background", "type": "background", "paint": {"background-color": "$defaultBgColor"}}]}""")
             }
         } else {
             val url = if (uiState.isNightMode) "https://tiles.openfreemap.org/styles/fiord" 
@@ -2548,18 +2603,27 @@ fun MapScreen(
             setupRouteLayers(style)
             styleUpdateTrigger++
             viewModel.setMapReady(true)
+
+            // Kamera nur vor dem initialen Zoom setzen; ein spaeteres Neuladen (z.B. Online-Nachladen)
+            // darf Zoom und Position des Nutzers nicht zuruecksetzen.
+            if (!uiState.isInitialZoomPerformed) uiState.rawLocation?.let { loc ->
+                try {
+                    map.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(loc, 17.5))
+                } catch (e: Exception) {}
+            }
         }
 
         // Ohne Netz und ohne Kartendaten darf der Start nicht an einem haengenden Stil scheitern.
-        delay(4000)
+        delay(if (isOfflineMode) 2000L else 8000L)
         if (!styleLoaded) {
             if (!isOfflineMode) {
-                FileLogger.log("MapScreen: Online style not loaded after 4s. Forcing ready state for UI.")
-                viewModel.setMapReady(true)
+                // Online-Stil nicht ladbar: Bei fehlenden lokalen Kartendaten gebuendelte Karte (Marienplatz) nutzen.
+                FileLogger.log("MapScreen: Online style timeout after 8s. Falling back to bundled offline map.")
+                viewModel.setOnlineMapUnavailable(true)
                 return@LaunchedEffect
             }
-            FileLogger.log("MapScreen: Offline style not loaded after 4s. Using plain background style.")
-            map.setStyle(Style.Builder().fromJson("""{"version": 8, "sources": {}, "layers": [{"id": "background", "type": "background", "paint": {"background-color": "#efede6"}}]}""")) { style ->
+            FileLogger.log("MapScreen: Offline style not loaded after 2s. Using plain background style.")
+            map.setStyle(Style.Builder().fromJson("""{"version": 8, "sources": {}, "layers": [{"id": "background", "type": "background", "paint": {"background-color": "$defaultBgColor"}}]}""")) { style ->
                 styleLoaded = true
                 updateMapPadding()
                 enableLocation(map)
@@ -2621,6 +2685,8 @@ fun MapScreen(
             }
         }
         
+        // Jede Layout-Runde wendet das Padding erneut an (korrigiert es auch nach Style-Reloads).
+        // Waehrend der HOME/NAVI-Animation verhindert paddingTransitionRunning das Ueberschreiben.
         val layoutListener = android.view.View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             updateMapPadding()
         }

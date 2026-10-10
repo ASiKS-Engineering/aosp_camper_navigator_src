@@ -5,8 +5,8 @@
     "openmaptiles": {
       "type": "vector",
       "tiles": ["http://offline.map/tiles/{z}/{x}/{y}.pbf?region=PLACEHOLDER_REGION"],
-      "minzoom": 0,
-      "maxzoom": 14
+      "minzoom": PLACEHOLDER_MINZOOM,
+      "maxzoom": PLACEHOLDER_MAXZOOM
     }
   },
   "sprite": "http://offline.map/sprite/sprite",

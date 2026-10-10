@@ -46,6 +46,9 @@ object NavigatorRuntime {
             synchronized(lock) {
                 if (!mapRuntimeConfigured) {
                     MapLibre.getInstance(requireContext())
+                    // Kacheln kommen lokal ueber den TileInterceptor. Ohne dies stellt MapLibre bei fehlendem
+                    // Netz (z.B. kurz nach dem Boot) keinerlei Anfragen und die Karte bleibt leer.
+                    MapLibre.setConnected(true)
                     mapRuntimeConfigured = true
                 }
             }
@@ -199,7 +202,7 @@ object NavigatorRuntime {
 
     private val sharedMapTileClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .addInterceptor(TileInterceptor())
+            .addInterceptor(TileInterceptor(requireContext()))
             .build()
     }
 

@@ -33,7 +33,18 @@ class MapImportWorker(
     }
 
     override suspend fun getForegroundInfo(): ForegroundInfo {
-        val notification = NotificationCompat.Builder(applicationContext, "MAP_IMPORT")
+        val channelId = "MAP_IMPORT"
+        val notificationManager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = android.app.NotificationChannel(
+                channelId,
+                "Karten Import",
+                android.app.NotificationManager.IMPORTANCE_LOW
+            )
+            notificationManager.createNotificationChannel(channel)
+        }
+
+        val notification = NotificationCompat.Builder(applicationContext, channelId)
             .setContentTitle("Karten-Import")
             .setContentText("Turbo-Installation (Pi 5 Safe)...")
             .setSmallIcon(R.drawable.stat_sys_download)
@@ -41,6 +52,43 @@ class MapImportWorker(
             .build()
         return ForegroundInfo(43, notification, 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0)
+    }
+
+    private fun getDirectFileFromUri(context: Context, uri: Uri): File? {
+        if (uri.scheme == "file") {
+            return uri.path?.let { File(it) }
+        }
+        if (uri.scheme == "content") {
+            val docId = try {
+                android.provider.DocumentsContract.getDocumentId(uri)
+            } catch (e: Exception) {
+                uri.path
+            } ?: return null
+
+            val split = docId.split(":")
+            if (split.size >= 2) {
+                val type = split[0]
+                val relativePath = split[1]
+
+                val possiblePaths = mutableListOf<String>()
+                if ("primary".equals(type, ignoreCase = true)) {
+                    possiblePaths.add("/storage/emulated/0/$relativePath")
+                    possiblePaths.add("/sdcard/$relativePath")
+                } else {
+                    possiblePaths.add("/storage/$type/$relativePath")
+                    possiblePaths.add("/mnt/media_rw/$type/$relativePath")
+                    possiblePaths.add("/mnt/user/0/primary/$relativePath")
+                }
+
+                for (p in possiblePaths) {
+                    val f = File(p)
+                    if (f.exists() && f.canRead()) {
+                        return f
+                    }
+                }
+            }
+        }
+        return null
     }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
@@ -69,6 +117,16 @@ class MapImportWorker(
         return@withContext try {
             val finalDir = File(internalRoutingDir, regionId)
             
+            // Clean up leftover extraction dir; keep a valid cached ZIP for resume
+            tempExtractDir.deleteRecursively()
+            tempExtractDir.mkdirs()
+
+            val hasResumableZip = tempZip.exists() && tempZip.length() > 4000000000L && ZipUtil.checkIntegrity(tempZip)
+            if (tempZip.exists() && !hasResumableZip) tempZip.delete()
+
+            val usableSpaceMb = internalRoutingDir.usableSpace / (1024 * 1024)
+            FileLogger.log("MapImportWorker: Storage space available on /data: ${usableSpaceMb} MB")
+
             // SOFORT-ERFOLG: Falls die Karte schon da ist
             if (finalDir.exists() && File(finalDir, "nodes").exists() && File(finalDir, "edges").exists()) {
                 FileLogger.log("MapImportWorker: Map $regionId already complete. Success!")
@@ -76,87 +134,34 @@ class MapImportWorker(
                 return@withContext Result.success(workDataOf(KEY_DISCOVERED_ID to regionId))
             }
 
-            // 2. CHECK IF ZIP ALREADY IN CACHE (RESUME)
-            var isCopyNeeded = true
-            if (tempZip.exists() && tempZip.length() > 4000000000L) {
-                FileLogger.log("MapImportWorker: Found large ZIP in cache. Verifying...")
-                if (ZipUtil.checkIntegrity(tempZip)) {
-                    FileLogger.log("MapImportWorker: ZIP is valid. Skipping copy.")
-                    isCopyNeeded = false
+            // DIRECT ZIP EXTRACTION FROM NVME: Use ZipFile for large ZIP64 archives directly on NVMe
+            val parsedUri = Uri.parse(uriString)
+            val directFile = getDirectFileFromUri(applicationContext, parsedUri)
+
+            if (directFile != null && directFile.exists() && directFile.canRead()) {
+                FileLogger.log("MapImportWorker: Direct ZIP64 extraction from NVMe file: ${directFile.absolutePath}")
+                if (tempZip.exists()) tempZip.delete()
+                if (!ZipUtil.checkIntegrity(directFile)) throw Exception("ZIP integrity check failed.")
+                ZipUtil.unzip(directFile, tempExtractDir) { progress ->
+                    lockFile.setLastModified(System.currentTimeMillis())
+                    setProgressAsync(workDataOf(KEY_PROGRESS to progress))
+                }
+            } else {
+                if (hasResumableZip) {
+                    FileLogger.log("MapImportWorker: Valid ZIP found in cache. Skipping copy.")
+                } else {
+                    FileLogger.log("MapImportWorker: ContentResolver fallback copy & extract...")
+                    copyFromContentResolver(parsedUri, tempZip, lockFile)
+                }
+                setProgressAsync(workDataOf(KEY_PROGRESS to 30))
+                if (!ZipUtil.checkIntegrity(tempZip)) throw Exception("ZIP integrity check failed.")
+
+                ZipUtil.unzip(tempZip, tempExtractDir) { progress ->
+                    lockFile.setLastModified(System.currentTimeMillis())
+                    setProgressAsync(workDataOf(KEY_PROGRESS to (30 + (progress * 70 / 100))))
                 }
             }
 
-            // 3. TURBO-KOPIEREN (0-30%) - Adaptive buffer für large files
-            if (isCopyNeeded) {
-                FileLogger.log("MapImportWorker: Starting Turbo-Copy...")
-                var pfd: android.os.ParcelFileDescriptor? = null
-                try {
-                    pfd = applicationContext.contentResolver.openFileDescriptor(Uri.parse(uriString), "r")
-                    val totalSize = pfd?.statSize ?: -1L
-                    
-                    if (pfd != null) {
-                        FileInputStream(pfd.fileDescriptor).use { input ->
-                            FileOutputStream(tempZip).use { output ->
-                                // Adaptive buffer: 4MB für stabilitäre/große Dateien
-                                val buffer = ByteArray(4 * 1024 * 1024)
-                                var bytesRead: Int
-                                var totalRead = 0L
-                                var syncCounter = 0L
-                                var lastProgressTime = System.currentTimeMillis()
-                                
-                                while (input.read(buffer).also { bytesRead = it } != -1) {
-                                    output.write(buffer, 0, bytesRead)
-                                    totalRead += bytesRead
-                                    syncCounter += bytesRead
-                                    
-                                    // Sync alle 200MB statt 500MB (besser für RPi5 SD)
-                                    if (syncCounter >= 200 * 1024 * 1024) {
-                                        output.flush()
-                                        output.getFD().sync()
-                                        syncCounter = 0
-                                        // Minimale Pause für FS-Recovery
-                                        delay(5)
-                                    }
-                                    
-                                    // Progress nur jede 500ms aktualisieren (Reduce overhead)
-                                    val now = System.currentTimeMillis()
-                                    if (totalSize > 0 && now - lastProgressTime >= 500L) {
-                                        setProgressAsync(workDataOf(KEY_PROGRESS to (totalRead * 30 / totalSize).toInt()))
-                                        lastProgressTime = now
-                                    }
-                                    
-                                    // Keep lock alive
-                                    if (now - lockFile.lastModified() > 1000L) {
-                                        lockFile.setLastModified(now)
-                                    }
-                                }
-                                output.flush()
-                                output.getFD().sync()
-                            }
-                        }
-                    }
-                } finally {
-                    pfd?.close()
-                }
-            }
-            
-            setProgressAsync(workDataOf(KEY_PROGRESS to 30))
-            FileLogger.log("MapImportWorker: Copy finished (30%). Verifying CRC...")
-
-            if (!ZipUtil.checkIntegrity(tempZip)) throw Exception("ZIP integrity check failed.")
-            
-            setProgressAsync(workDataOf(KEY_PROGRESS to 31))
-            FileLogger.log("MapImportWorker: Integrity verified (31%). Starting extraction...")
-
-            // 4. TURBO-EXTRAKTION (31-100%)
-            tempExtractDir.deleteRecursively()
-            tempExtractDir.mkdirs()
-
-            ZipUtil.unzip(tempZip, tempExtractDir) { progress ->
-                lockFile.setLastModified(System.currentTimeMillis())
-                setProgressAsync(workDataOf(KEY_PROGRESS to (31 + (progress * 69 / 100))))
-            }
-            
             // 5. FINALISIERUNG
             fun findDataRoot(dir: File): File? {
                 if (File(dir, "nodes").exists()) return dir
@@ -193,6 +198,7 @@ class MapImportWorker(
             }
             
             FileLogger.log("IMPORT COMPLETED: $regionId")
+            if (tempZip.exists()) tempZip.delete()
             Result.success(workDataOf(KEY_DISCOVERED_ID to regionId))
         } catch (e: Exception) {
             FileLogger.log("IMPORT ERROR: ${e.message}", "ERROR")
@@ -200,6 +206,52 @@ class MapImportWorker(
         } finally {
             lockFile.delete()
             tempExtractDir.deleteRecursively()
+        }
+    }
+
+    private suspend fun copyFromContentResolver(uri: Uri, target: File, lockFile: File) {
+        var pfd: android.os.ParcelFileDescriptor? = null
+        try {
+            pfd = applicationContext.contentResolver.openFileDescriptor(uri, "r")
+                ?: throw Exception("Quelldatei konnte nicht geoeffnet werden.")
+            val totalSize = pfd.statSize
+            FileInputStream(pfd.fileDescriptor).use { input ->
+                FileOutputStream(target).use { output ->
+                    val buffer = ByteArray(256 * 1024)
+                    var bytesRead: Int
+                    var totalRead = 0L
+                    var syncCounter = 0L
+                    var lastProgressTime = System.currentTimeMillis()
+
+                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                        output.write(buffer, 0, bytesRead)
+                        totalRead += bytesRead
+                        syncCounter += bytesRead
+
+                        if (syncCounter >= 100 * 1024 * 1024) {
+                            output.flush()
+                            output.fd.sync()
+                            syncCounter = 0
+                            delay(2)
+                        }
+
+                        val now = System.currentTimeMillis()
+                        if (totalSize > 0 && now - lastProgressTime >= 400L) {
+                            val currentProgress = (totalRead * 30 / totalSize).toInt().coerceIn(0, 30)
+                            setProgressAsync(workDataOf(KEY_PROGRESS to currentProgress))
+                            lastProgressTime = now
+                        }
+
+                        if (now - lockFile.lastModified() > 1000L) {
+                            lockFile.setLastModified(now)
+                        }
+                    }
+                    output.flush()
+                    output.fd.sync()
+                }
+            }
+        } finally {
+            pfd?.close()
         }
     }
 }
