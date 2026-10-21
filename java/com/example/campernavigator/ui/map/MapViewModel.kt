@@ -153,6 +153,11 @@ data class MapUiState(
 
 enum class MapMode { DAY, NIGHT, AUTO }
 
+private const val DEMO_SPEED_KMH = 50.0
+private const val DEMO_TICK_MS = 250L
+private const val DEMO_MAX_TURN_DEG_PER_S = 120f
+private const val ROUTE_SEARCH_WINDOW = 200
+
 data class SnapResult(val position: LatLng, val bearing: Float, val isSnapped: Boolean)
 
 class MapViewModel(
@@ -521,6 +526,10 @@ class MapViewModel(
     }
 
     fun updateUserLocation(location: Location) {
+        if (simulationJob?.isActive == true) {
+            // The demo drive replaces the real position while it runs.
+            return
+        }
         if (forceFallbackMarienplatz) {
             // Ignoriere echte GPS-Updates, wenn keine lokalen Kartendaten vorhanden und offline,
             // damit die Karte fest auf Marienplatz fixiert bleibt und Kacheln dort geladen werden.
@@ -565,7 +574,10 @@ class MapViewModel(
                     currentSpeed = location.speed,
                     currentAltitude = newAlt
                 ) }
-                if (_uiState.value.isNavigating) checkNavigationInstructions(snapResult.position)
+                if (_uiState.value.isNavigating) {
+                    updateRouteProgress(snapResult.position)
+                    checkNavigationInstructions(snapResult.position)
+                }
             }
         }
     }
@@ -593,21 +605,234 @@ class MapViewModel(
     fun onNavigationCameraReady() { if (!_uiState.value.isNavigating || _uiState.value.isGuidanceActive) return; _uiState.update { it.copy(isGuidanceActive = true) } }
     fun toggleMapOrientation() { val newValue = !_uiState.value.isNorthUp; _uiState.update { it.copy(isNorthUp = newValue) }; saveSetting(KEY_NORTH_UP, newValue) }
     
+    private var routeJob: Job? = null
+
     fun calculateRoute(start: LatLng, end: LatLng, waypoints: List<LatLng> = emptyList()) {
-        viewModelScope.launch {
+        // The latest request wins: a superseded calculation must not overwrite the newer route.
+        routeJob?.cancel()
+        routeJob = viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, loadingMessage = "Berechne Route...") }
             try {
                 val route = routingService.calculateRoute(start, end, _uiState.value.selectedVehicle, _uiState.value.hasTrailer, waypoints)
                 _uiState.update { it.copy(currentRoute = route, isLoading = false, destinationPoint = end, waypoints = waypoints) }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.update { it.copy(isLoading = false, showErrorDialog = e.message) }
             }
         }
     }
 
-    fun clearRoute() { _uiState.update { it.copy(currentRoute = null, destinationPoint = null, waypoints = emptyList(), isNavigating = false, isGuidanceActive = false) } }
-    fun startNavigation() { if (_uiState.value.currentRoute != null) _uiState.update { it.copy(isNavigating = true, isGuidanceActive = true) } }
-    fun stopNavigation() { _uiState.update { it.copy(isNavigating = false, currentRoute = null) } }
+    fun clearRoute() {
+        stopDemoSimulation()
+        lastRoutePointIndex = 0
+        _uiState.update { it.copy(currentRoute = null, destinationPoint = null, waypoints = emptyList(), isNavigating = false, isGuidanceActive = false) }
+    }
+    fun startNavigation() {
+        if (_uiState.value.currentRoute == null) return
+        lastSpokenInstructionIndex = -1
+        wasCurrentInstructionSpoken = false
+        lastRoutePointIndex = 0
+        _uiState.update { it.copy(isNavigating = true, isGuidanceActive = true) }
+        if (_uiState.value.isDemoMode) startDemoSimulation()
+    }
+    fun stopNavigation() {
+        val wasDemo = _uiState.value.isDemoMode
+        stopDemoSimulation()
+        lastRoutePointIndex = 0
+        _uiState.update { it.copy(
+            isNavigating = false,
+            currentRoute = null,
+            currentInstruction = null,
+            currentInstructionSign = null,
+            currentStreetName = null,
+            distanceToNextInstruction = null,
+            remainingDistance = null,
+            remainingTime = null,
+            routeProjection = null,
+            isSnappedToRoute = false,
+            // The demo position does not match the real world; fall back to the last real position.
+            snappedLocation = if (wasDemo) lastRealFix ?: LastPositionStore.load(graphHopperEngine.context) else it.snappedLocation,
+            rawLocation = if (wasDemo) lastRealFix ?: LastPositionStore.load(graphHopperEngine.context) else it.rawLocation,
+            currentSpeed = if (wasDemo) 0f else it.currentSpeed
+        ) }
+    }
+
+    private fun stopDemoSimulation() {
+        simulationJob?.cancel()
+        simulationJob = null
+    }
+
+    /** Drives along the current route at a constant speed, as if a real GPS fix was received. */
+    private fun startDemoSimulation() {
+        stopDemoSimulation()
+        val route = _uiState.value.currentRoute ?: return
+        val points = route.points
+        if (points.size < 2) return
+        simulationJob = viewModelScope.launch(Dispatchers.Default) {
+            val speedMs = DEMO_SPEED_KMH / 3.6
+            var segment = 0
+            var offsetInSegment = 0.0
+            var position = points[0]
+            var shownBearing = bearingBetween(points[0], points[1])
+            while (isActive && segment < points.size - 1) {
+                val from = points[segment]
+                val to = points[segment + 1]
+                val segmentLength = calculateDistance(from, to)
+                val bearing = GeoUtil.normalizeBearing(bearingBetween(from, to))
+                if (segmentLength > 0.0) {
+                    val f = (offsetInSegment / segmentLength).coerceIn(0.0, 1.0)
+                    position = LatLng(
+                        from.latitude + (to.latitude - from.latitude) * f,
+                        from.longitude + (to.longitude - from.longitude) * f
+                    )
+                }
+                val current = position
+                // Limit the turn rate so corners do not snap the camera around.
+                val maxStep = DEMO_MAX_TURN_DEG_PER_S * DEMO_TICK_MS / 1000f
+                var diff = ((bearing - shownBearing + 540f) % 360f) - 180f
+                diff = diff.coerceIn(-maxStep, maxStep)
+                shownBearing = (shownBearing + diff + 360f) % 360f
+                val tickBearing = shownBearing
+                withContext(Dispatchers.Main) {
+                    updateRouteProgress(current) { it.copy(
+                        snappedLocation = current,
+                        rawLocation = current,
+                        currentBearing = tickBearing,
+                        currentSpeed = speedMs.toFloat(),
+                        isLocationDetermined = true
+                    ) }
+                    checkNavigationInstructions(current)
+                }
+                delay(DEMO_TICK_MS)
+                offsetInSegment += speedMs * DEMO_TICK_MS / 1000.0
+                while (segment < points.size - 1) {
+                    val len = calculateDistance(points[segment], points[segment + 1])
+                    if (offsetInSegment < len) break
+                    offsetInSegment -= len
+                    segment++
+                }
+            }
+            if (isActive) {
+                withContext(Dispatchers.Main) { stopNavigation() }
+            }
+        }
+    }
+
+    private fun bearingBetween(from: LatLng, to: LatLng): Float {
+        val lat1 = Math.toRadians(from.latitude)
+        val lat2 = Math.toRadians(to.latitude)
+        val dLon = Math.toRadians(to.longitude - from.longitude)
+        val y = Math.sin(dLon) * Math.cos(lat2)
+        val x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon)
+        return ((Math.toDegrees(Math.atan2(y, x)) + 360.0) % 360.0).toFloat()
+    }
+
+    private var cachedInstructionRoute: Route? = null
+    private var cachedInstructionPointIndex: List<Int> = emptyList()
+
+    /** For each instruction the index of the nearest route point; instructions are ordered along the route. */
+    private fun instructionPointIndexFor(route: Route): List<Int> {
+        if (cachedInstructionRoute === route) return cachedInstructionPointIndex
+        val points = route.points
+        var from = 0
+        val result = route.instructions.map { instruction ->
+            var best = from
+            var bestDist = calculateDistance(instruction.location, points[best])
+            for (i in from + 1 until points.size) {
+                val d = calculateDistance(instruction.location, points[i])
+                if (d < bestDist) { bestDist = d; best = i }
+            }
+            from = best
+            best
+        }
+        cachedInstructionRoute = route
+        cachedInstructionPointIndex = result
+        return result
+    }
+
+    /**
+     * Updates remaining distance/time, the route projection and the maneuver shown to the driver.
+     * [base] is applied in the same state update, so a position change and its route progress
+     * reach the UI as a single emission.
+     */
+    private fun updateRouteProgress(position: LatLng, base: (MapUiState) -> MapUiState = { it }) {
+        val route = _uiState.value.currentRoute
+        val points = route?.points
+        if (route == null || points == null || points.size < 2) {
+            _uiState.update(base)
+            return
+        }
+
+        // Project the position onto the route segments, searching forward from the last segment
+        // so the progress never jumps back. The projection (not the nearest vertex) keeps the
+        // traveled line exactly at the vehicle, however long the route segments are.
+        val startSeg = lastRoutePointIndex.coerceIn(0, points.size - 2)
+        val endSeg = minOf(points.size - 2, startSeg + ROUTE_SEARCH_WINDOW)
+        var bestSeg = startSeg
+        var bestFraction = 0.0
+        var bestDist = Double.MAX_VALUE
+        for (i in startSeg..endSeg) {
+            val (fraction, dist) = projectOnSegment(position, points[i], points[i + 1])
+            if (dist < bestDist) { bestDist = dist; bestSeg = i; bestFraction = fraction }
+        }
+        lastRoutePointIndex = bestSeg
+
+        val a = points[bestSeg]
+        val b = points[bestSeg + 1]
+        val projection = LatLng(
+            a.latitude + (b.latitude - a.latitude) * bestFraction,
+            a.longitude + (b.longitude - a.longitude) * bestFraction
+        )
+
+        var remaining = calculateDistance(projection, b)
+        for (i in bestSeg + 1 until points.size - 1) remaining += calculateDistance(points[i], points[i + 1])
+        val fractionLeft = if (route.distance > 0.0) (remaining / route.distance).coerceIn(0.0, 1.0) else 0.0
+
+        val instructions = route.instructions
+        val instructionPointIndex = instructionPointIndexFor(route)
+        val nextIdx = instructionPointIndex.indexOfFirst { it > bestSeg }.let { if (it >= 0) it else instructions.size - 1 }
+        val next = instructions.getOrNull(nextIdx)
+        val following = instructions.getOrNull(nextIdx + 1)
+
+        _uiState.update { state -> base(state).copy(
+            lastRoutePointIndex = bestSeg,
+            routeProjection = projection,
+            isSnappedToRoute = true,
+            remainingDistance = remaining,
+            remainingTime = (route.time * fractionLeft).toLong(),
+            currentInstruction = next?.text,
+            currentInstructionSign = next?.sign,
+            currentStreetName = next?.streetName,
+            currentManeuverStreet = next?.streetName,
+            currentRoundaboutExit = next?.roundaboutExit,
+            distanceToNextInstruction = next?.let { calculateDistance(position, it.location) },
+            upcomingInstruction = following?.text,
+            upcomingInstructionSign = following?.sign,
+            upcomingManeuverStreet = following?.streetName,
+            upcomingRoundaboutExit = following?.roundaboutExit
+        ) }
+    }
+
+    /** Returns the position of the point on a-b closest to [p] as a fraction of the segment, and its distance in meters. */
+    private fun projectOnSegment(p: LatLng, a: LatLng, b: LatLng): Pair<Double, Double> {
+        // Local equirectangular plane around the segment; accurate enough for segments of a few hundred meters.
+        val cosLat = Math.cos(Math.toRadians(a.latitude))
+        val ax = 0.0
+        val ay = 0.0
+        val bx = (b.longitude - a.longitude) * cosLat
+        val by = b.latitude - a.latitude
+        val px = (p.longitude - a.longitude) * cosLat
+        val py = p.latitude - a.latitude
+        val lenSq = bx * bx + by * by
+        val t = if (lenSq == 0.0) 0.0 else (((px - ax) * bx + (py - ay) * by) / lenSq).coerceIn(0.0, 1.0)
+        val cx = ax + bx * t
+        val cy = ay + by * t
+        val metersPerDegree = 111_320.0
+        val dist = Math.hypot(px - cx, py - cy) * metersPerDegree
+        return t to dist
+    }
+
     fun dismissErrorDialog() { _uiState.update { it.copy(showErrorDialog = null) } }
     fun dismissResumeDialog() { _uiState.update { it.copy(showResumeNavigationDialog = false) } }
     fun resumeNavigation() { startNavigation() }
@@ -795,6 +1020,7 @@ class MapViewModel(
 
     override fun onCleared() {
         super.onCleared()
+        stopDemoSimulation()
         MBTilesManager.closeAll()
         if (isLocationTrackingActive) locationProvider.stopLocationUpdates()
         try {

@@ -70,6 +70,9 @@ import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.material.icons.filled.Bolt
@@ -276,6 +279,10 @@ fun MapScreen(
     val FULL_ROUTE_LAYER_ID = "full-route-layer"
     val TRAVELED_PATH_SOURCE_ID = "traveled-path-source"
     val TRAVELED_PATH_LAYER_ID = "traveled-path-layer"
+    // The traveled line is split in a long "committed" part, rewritten only when the vehicle passes
+    // a route vertex, and a short "tail" up to the vehicle, rewritten on every position update.
+    val TRAVELED_TAIL_SOURCE_ID = "traveled-tail-source"
+    val TRAVELED_TAIL_LAYER_ID = "traveled-tail-layer"
     
     // Custom location engine for map matching
     class SnappedLocationEngine : org.maplibre.android.location.engine.LocationEngine {
@@ -381,10 +388,26 @@ fun MapScreen(
             )
             style.addLayerAbove(layer, FULL_ROUTE_LAYER_ID)
         }
+
+        if (style.getSource(TRAVELED_TAIL_SOURCE_ID) == null) {
+            style.addSource(GeoJsonSource(TRAVELED_TAIL_SOURCE_ID))
+            val layer = LineLayer(TRAVELED_TAIL_LAYER_ID, TRAVELED_TAIL_SOURCE_ID).withProperties(
+                PropertyFactory.lineColor(Color.LightGray.toArgb()),
+                PropertyFactory.lineWidth(10f),
+                PropertyFactory.lineCap(Property.LINE_CAP_BUTT),
+                PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
+            )
+            style.addLayerAbove(layer, TRAVELED_PATH_LAYER_ID)
+        }
         android.util.Log.i("MapScreen", "Route-Layer bereit.")
     }
 
     val snappedLocationEngine = remember { SnappedLocationEngine() }
+    // [last feed time, smoothed interval between position updates] in ms. The vehicle symbol
+    // glides to each new position over one interval, so it trails the data by about that long.
+    val feedTiming = remember { longArrayOf(0L, 250L) }
+    // Route vertex index up to which the traveled line is currently written to the map.
+    val committedTraveledIdx = remember { intArrayOf(-1) }
 
     // Modus, fuer den das Padding zuletzt endgueltig gesetzt wurde. Weicht er vom aktuellen Modus ab, laeuft
     // (oder startet gleich) die HOME/NAVI-Animation und updateMapPadding() darf das Padding nicht ueberschreiben.
@@ -714,6 +737,9 @@ fun MapScreen(
             update = { }
         )
 
+        // The map runs edge to edge behind the transparent system bars; everything on top of it
+        // keeps clear of them.
+        Box(modifier = Modifier.fillMaxSize().padding(WindowInsets.systemBars.asPaddingValues())) {
         if (uiState.navigationUiMode == NavigationUiMode.HOME) {
             // HOME layout keeps the left launcher widget area non-interactive for the map.
             Box(
@@ -1673,8 +1699,6 @@ fun MapScreen(
                                         isFavoritesOpen = false
                                         viewModel.selectSearchResult(fav)
                                         mapInstance?.animateCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(fav.location, 19.0))
-                                        val start = uiState.snappedLocation ?: uiState.rawLocation ?: LatLng(52.5200, 13.4050)
-                                        viewModel.calculateRoute(start = start, end = fav.location)
                                     },
                                     onToggleFavorite = { viewModel.toggleFavorite(fav) }
                                 )
@@ -1694,8 +1718,6 @@ fun MapScreen(
                                         isFavoritesOpen = false
                                         viewModel.selectSearchResult(recent)
                                         mapInstance?.animateCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(recent.location, 19.0))
-                                        val start = uiState.snappedLocation ?: uiState.rawLocation ?: LatLng(52.5200, 13.4050)
-                                        viewModel.calculateRoute(start = start, end = recent.location)
                                     },
                                     onToggleFavorite = { viewModel.toggleFavorite(recent) }
                                 )
@@ -2097,8 +2119,6 @@ fun MapScreen(
                                         mapInstance?.animateCamera(
                                             org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(result.location, 19.0)
                                         )
-                                        val start = uiState.snappedLocation ?: uiState.rawLocation ?: LatLng(52.5200, 13.4050)
-                                        viewModel.calculateRoute(start = start, end = result.location)
                                     }
                                 }
                             )
@@ -2112,6 +2132,7 @@ fun MapScreen(
                     focusRequester.requestFocus()
                 }
             }
+        }
         }
     }
 
@@ -2210,6 +2231,12 @@ fun MapScreen(
     val displayLocation = uiState.snappedLocation ?: uiState.rawLocation
     LaunchedEffect(displayLocation, uiState.currentBearing, uiState.currentSpeed) {
         val loc = displayLocation ?: return@LaunchedEffect
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (feedTiming[0] > 0L) {
+            val measured = (now - feedTiming[0]).coerceIn(100L, 2000L)
+            feedTiming[1] = (feedTiming[1] * 7 + measured * 3) / 10
+        }
+        feedTiming[0] = now
         
         val dummyLocation = android.location.Location("fused").apply {
             latitude = loc.latitude
@@ -2282,6 +2309,8 @@ fun MapScreen(
             // Clear route
             style.getSourceAs<GeoJsonSource>(FULL_ROUTE_SOURCE_ID)?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
             style.getSourceAs<GeoJsonSource>(TRAVELED_PATH_SOURCE_ID)?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
+            style.getSourceAs<GeoJsonSource>(TRAVELED_TAIL_SOURCE_ID)?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
+            committedTraveledIdx[0] = -1
         }
     }
 
@@ -2293,6 +2322,8 @@ fun MapScreen(
 
         if (!uiState.isNavigating || uiState.currentRoute == null) {
             style.getSourceAs<GeoJsonSource>(TRAVELED_PATH_SOURCE_ID)?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
+            style.getSourceAs<GeoJsonSource>(TRAVELED_TAIL_SOURCE_ID)?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
+            committedTraveledIdx[0] = -1
             return@LaunchedEffect
         }
 
@@ -2302,11 +2333,14 @@ fun MapScreen(
 
         uiState.currentRoute?.let { route ->
             val routePoints = route.points
+            if (style.getSource(TRAVELED_TAIL_SOURCE_ID) == null) setupRouteLayers(style)
             val source = style.getSourceAs<GeoJsonSource>(TRAVELED_PATH_SOURCE_ID) ?: return@LaunchedEffect
+            val tailSource = style.getSourceAs<GeoJsonSource>(TRAVELED_TAIL_SOURCE_ID) ?: return@LaunchedEffect
 
-            // Buffer logic: We end 5m behind CCP to mask rendering lags.
-            // This prevents the gray line from ever appearing "in front" of vehicle nose.
-            val bufferMeters = 5.0
+            // Buffer logic: the vehicle symbol glides to every new position over one update interval,
+            // so it trails the data by about speed * interval. The gray line ends that far behind the
+            // projection, so it never appears "in front" of the vehicle nose.
+            val bufferMeters = 3.0 + uiState.currentSpeed.coerceAtLeast(0f) * feedTiming[1] / 1000.0
             var remaining = bufferMeters
             var lastPos = projection
             var currentIdx = uiState.lastRoutePointIndex.coerceAtMost(routePoints.size - 1)
@@ -2340,13 +2374,32 @@ fun MapScreen(
                 }
             }
 
-            val traveledLatLngs = routePoints.subList(0, (currentIdx + 1).coerceAtLeast(0)).toMutableList()
-            traveledLatLngs.add(bufferPoint)
-            
-            val geoPoints = traveledLatLngs.map { Point.fromLngLat(it.longitude, it.latitude) }
-            if (geoPoints.isNotEmpty()) {
-                source.setGeoJson(FeatureCollection.fromFeature(Feature.fromGeometry(LineString.fromLngLats(geoPoints))))
+            // Committed part: everything up to the vertex behind the buffer point. It changes only when
+            // the vehicle passes a route vertex, so the long line is not rebuilt on every update.
+            if (committedTraveledIdx[0] != currentIdx) {
+                val committed = routePoints.subList(0, (currentIdx + 1).coerceAtLeast(0))
+                    .map { Point.fromLngLat(it.longitude, it.latitude) }
+                source.setGeoJson(
+                    if (committed.size >= 2) FeatureCollection.fromFeature(Feature.fromGeometry(LineString.fromLngLats(committed)))
+                    else FeatureCollection.fromFeatures(emptyArray())
+                )
+                committedTraveledIdx[0] = currentIdx
             }
+
+            // Tail: from that vertex to the buffer point, rewritten on every update.
+            val tailStart = routePoints[currentIdx.coerceIn(0, routePoints.size - 1)]
+            tailSource.setGeoJson(
+                FeatureCollection.fromFeature(
+                    Feature.fromGeometry(
+                        LineString.fromLngLats(
+                            listOf(
+                                Point.fromLngLat(tailStart.longitude, tailStart.latitude),
+                                Point.fromLngLat(bufferPoint.longitude, bufferPoint.latitude)
+                            )
+                        )
+                    )
+                )
+            )
         }
     }
 

@@ -175,9 +175,16 @@ class MapImportWorker(
             fun scan(d: File) { d.listFiles()?.forEach { if(it.isDirectory) scan(it) else allFiles.add(it) } }
             scan(tempExtractDir)
             val mbtilesFile = allFiles.find { it.name.endsWith(".mbtiles", ignoreCase = true) }
+            // The routing model defines the weights the landmarks were built with; a pack without it cannot be routed on.
+            val modelFile = allFiles.find { it.name == "custom_model.json" && it.parentFile?.name == "config" }
+                ?: throw Exception("Das Kartenpaket enthält kein Routing-Modell (config/custom_model.json). Bitte mit dem aktuellen MapBuilder neu erstellen.")
+            val manifestFile = allFiles.find { it.name == "manifest.json" && it.parentFile == modelFile.parentFile?.parentFile }
 
             finalDir.deleteRecursively()
             finalDir.mkdirs()
+
+            modelFile.copyTo(File(finalDir, "custom_model.json"), true)
+            manifestFile?.copyTo(File(finalDir, "manifest.json"), true)
             
             // 1. MBTiles verschieben (Absolute Prio)
             if (mbtilesFile != null && mbtilesFile.exists()) {
