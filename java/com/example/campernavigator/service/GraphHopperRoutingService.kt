@@ -41,7 +41,7 @@ class GraphHopperRoutingService(
             waypoints.forEach { addPoint(com.graphhopper.util.shapes.GHPoint(it.latitude, it.longitude)) }
             addPoint(com.graphhopper.util.shapes.GHPoint(end.latitude, end.longitude))
             setProfile(ghProfile)
-            setPathDetails(listOf("max_speed"))
+            setPathDetails(listOf("max_speed", "average_speed"))
             putHint("index.max_region_search", 1000)
             putHint("index.high_resolution", true)
             putHint("curbside", "any")
@@ -97,12 +97,23 @@ class GraphHopperRoutingService(
             } else null
         } ?: emptyList()
 
+        // Speed the routing model assumes per edge (road speed capped by the vehicle model); drives the demo mode.
+        val segmentSpeedKmh = bestPath.pathDetails["average_speed"]?.let { details ->
+            FloatArray((points.size - 1).coerceAtLeast(0)).also { out ->
+                for (detail in details) {
+                    val speed = (detail.value as? Number)?.toFloat() ?: continue
+                    for (i in detail.first until minOf(detail.last, out.size)) out[i] = speed
+                }
+            }
+        }
+
         Route(
             points = points,
             distance = bestPath.distance,
             time = bestPath.time,
             instructions = instructions,
-            speedLimits = speedLimits
+            speedLimits = speedLimits,
+            segmentSpeedKmh = segmentSpeedKmh
         )
     }
 

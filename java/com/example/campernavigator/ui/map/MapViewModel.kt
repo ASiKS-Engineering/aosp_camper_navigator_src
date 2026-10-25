@@ -33,6 +33,7 @@ import com.example.campernavigator.data.DestinationEntity
 import com.example.campernavigator.data.DestinationDao
 import com.example.campernavigator.data.SearchRepository
 import com.example.campernavigator.data.TrafficRepository
+import com.example.campernavigator.service.DemoSpeedProfile
 import com.example.campernavigator.service.GraphHopperEngine
 import com.example.campernavigator.service.LocationProvider
 import com.example.campernavigator.util.ConnectionStatus
@@ -148,12 +149,12 @@ data class MapUiState(
     val installedVehicleIds: Set<String> = emptySet(),
     val vehicleImportState: DownloadState = DownloadState.Idle,
 	val navigationUiMode: NavigationUiMode = NavigationUiMode.HOME,
-    val isCameraTracking: Boolean = true
+    val isCameraTracking: Boolean = true,
+    val demoSpeedFactor: Int = 1
 )
 
 enum class MapMode { DAY, NIGHT, AUTO }
 
-private const val DEMO_SPEED_KMH = 50.0
 private const val DEMO_TICK_MS = 250L
 private const val DEMO_MAX_TURN_DEG_PER_S = 120f
 private const val ROUTE_SEARCH_WINDOW = 200
@@ -196,6 +197,7 @@ class MapViewModel(
     private val KEY_MPH = "is_mph"
     private val KEY_MAP_MODE = "map_mode"
     private val KEY_ROUTING_MODE = "routing_mode"
+    private val KEY_DEMO_SPEED_FACTOR = "demo_speed_factor"
     private val KEY_ACTIVE_VEHICLE = NavigatorRuntime.KEY_ACTIVE_VEHICLE
     private val KEY_ACTIVE_REGION = NavigatorRuntime.KEY_ACTIVE_REGION
 
@@ -491,7 +493,8 @@ class MapViewModel(
             showBuildings = prefs.getBoolean(KEY_BUILDINGS, true),
             isMphEnabled = prefs.getBoolean(KEY_MPH, false),
             mapMode = MapMode.valueOf(prefs.getString(KEY_MAP_MODE, MapMode.AUTO.name) ?: MapMode.AUTO.name),
-            routingMode = RoutingMode.valueOf(prefs.getString(KEY_ROUTING_MODE, RoutingMode.FASTEST.name) ?: RoutingMode.FASTEST.name)
+            routingMode = RoutingMode.valueOf(prefs.getString(KEY_ROUTING_MODE, RoutingMode.FASTEST.name) ?: RoutingMode.FASTEST.name),
+            demoSpeedFactor = prefs.getInt(KEY_DEMO_SPEED_FACTOR, 1)
         ) }
 
         if (activeVehicleId != null) {
@@ -663,14 +666,19 @@ class MapViewModel(
         simulationJob = null
     }
 
-    /** Drives along the current route at a constant speed, as if a real GPS fix was received. */
+    /** Drives along the current route with an accelerating, braking vehicle, as if real GPS fixes were received. */
     private fun startDemoSimulation() {
         stopDemoSimulation()
         val route = _uiState.value.currentRoute ?: return
         val points = route.points
         if (points.size < 2) return
         simulationJob = viewModelScope.launch(Dispatchers.Default) {
-            val speedMs = DEMO_SPEED_KMH / 3.6
+            val profile = DemoSpeedProfile.build(
+                DoubleArray(points.size) { points[it].latitude },
+                DoubleArray(points.size) { points[it].longitude },
+                route.segmentSpeedKmh
+            )
+            val lengths = profile.segmentLengths
             var segment = 0
             var offsetInSegment = 0.0
             var position = points[0]
@@ -678,7 +686,7 @@ class MapViewModel(
             while (isActive && segment < points.size - 1) {
                 val from = points[segment]
                 val to = points[segment + 1]
-                val segmentLength = calculateDistance(from, to)
+                val segmentLength = lengths[segment]
                 val bearing = GeoUtil.normalizeBearing(bearingBetween(from, to))
                 if (segmentLength > 0.0) {
                     val f = (offsetInSegment / segmentLength).coerceIn(0.0, 1.0)
@@ -688,6 +696,9 @@ class MapViewModel(
                     )
                 }
                 val current = position
+                // The demo can run faster than real time to test long routes; speed and distance scale together.
+                val timeFactor = _uiState.value.demoSpeedFactor.coerceAtLeast(1)
+                val speedMs = profile.speedAt(segment, offsetInSegment) * timeFactor
                 // Limit the turn rate so corners do not snap the camera around.
                 val maxStep = DEMO_MAX_TURN_DEG_PER_S * DEMO_TICK_MS / 1000f
                 var diff = ((bearing - shownBearing + 540f) % 360f) - 180f
@@ -707,9 +718,8 @@ class MapViewModel(
                 delay(DEMO_TICK_MS)
                 offsetInSegment += speedMs * DEMO_TICK_MS / 1000.0
                 while (segment < points.size - 1) {
-                    val len = calculateDistance(points[segment], points[segment + 1])
-                    if (offsetInSegment < len) break
-                    offsetInSegment -= len
+                    if (offsetInSegment < lengths[segment]) break
+                    offsetInSegment -= lengths[segment]
                     segment++
                 }
             }
@@ -851,6 +861,7 @@ class MapViewModel(
     fun toggleFavorite(result: SearchResult) { }
     fun togglePowerSaveMode() { val n = !_uiState.value.isPowerSaveModeEnabled; _uiState.update { it.copy(isPowerSaveModeEnabled = n) }; saveSetting(KEY_POWER_SAVE, n) }
     fun toggleDemoMode() { _uiState.update { it.copy(isDemoMode = !_uiState.value.isDemoMode) } }
+    fun setDemoSpeedFactor(factor: Int) { _uiState.update { it.copy(demoSpeedFactor = factor) }; saveSetting(KEY_DEMO_SPEED_FACTOR, factor) }
     fun setRoutingMode(mode: RoutingMode) {
         _uiState.update { it.copy(routingMode = mode) }
         saveSetting(KEY_ROUTING_MODE, mode.name)

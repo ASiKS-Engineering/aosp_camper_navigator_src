@@ -24,7 +24,9 @@ data class Route(
     val distance: Double,
     val time: Long,
     val instructions: List<RouteInstruction> = emptyList(),
-    val speedLimits: List<SpeedLimitInfo> = emptyList()
+    val speedLimits: List<SpeedLimitInfo> = emptyList(),
+    /** Modelled travel speed in km/h for each segment points[i] -> points[i + 1] (includes the vehicle's speed limit). */
+    val segmentSpeedKmh: FloatArray? = null
 )
 
 interface RoutingService {

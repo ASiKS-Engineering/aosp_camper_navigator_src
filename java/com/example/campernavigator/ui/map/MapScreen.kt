@@ -152,6 +152,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -273,6 +275,8 @@ fun MapScreen(
     val isCameraTracking = uiState.isCameraTracking
     var isSystemMovingCamera by remember { mutableStateOf(false) }
     var styleUpdateTrigger by remember { mutableStateOf(0) }
+    // Bumped to reload the style, which frees every tile buffer of the map (see the mapping guard below).
+    var styleReloadNonce by remember { mutableStateOf(0) }
     
     // Constants for route layers
     val FULL_ROUTE_SOURCE_ID = "full-route-source"
@@ -1800,6 +1804,31 @@ fun MapScreen(
                                             )
                                         }
                                     )
+                                    if (uiState.isDemoMode) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text("Demo-Tempo", style = MaterialTheme.typography.labelMedium, color = Color.Gray, modifier = Modifier.padding(end = 8.dp))
+                                            listOf(1, 2, 4, 8).forEach { factor ->
+                                                val isSelected = uiState.demoSpeedFactor == factor
+                                                Surface(
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .height(36.dp)
+                                                        .clickable { viewModel.setDemoSpeedFactor(factor) },
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.3f),
+                                                    border = if (isSelected) null else BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
+                                                ) {
+                                                    Box(contentAlignment = Alignment.Center) {
+                                                        Text("${factor}×", color = if (isSelected) Color.White else Color.Gray, style = MaterialTheme.typography.labelLarge)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
 
                                     HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color.White.copy(alpha = 0.1f))
                                     Text("Routen-Optimierung", style = MaterialTheme.typography.labelMedium, color = Color.Gray, modifier = Modifier.padding(start = 16.dp, bottom = 8.dp))
@@ -2374,32 +2403,26 @@ fun MapScreen(
                 }
             }
 
-            // Committed part: everything up to the vertex behind the buffer point. It changes only when
-            // the vehicle passes a route vertex, so the long line is not rebuilt on every update.
-            if (committedTraveledIdx[0] != currentIdx) {
-                val committed = routePoints.subList(0, (currentIdx + 1).coerceAtLeast(0))
+            // Committed part: the long line up to a vertex behind the buffer point. Rewriting it forces the map to
+            // re-tile the whole line and rebuild GL buffers, so it only grows in steps of a few vertices; the
+            // small tail source carries the vertices in between.
+            val commitStepVertices = 12
+            val tailIdx = currentIdx.coerceIn(0, routePoints.size - 1)
+            if (committedTraveledIdx[0] < 0 || tailIdx < committedTraveledIdx[0] || tailIdx - committedTraveledIdx[0] >= commitStepVertices) {
+                val committed = routePoints.subList(0, tailIdx + 1)
                     .map { Point.fromLngLat(it.longitude, it.latitude) }
                 source.setGeoJson(
                     if (committed.size >= 2) FeatureCollection.fromFeature(Feature.fromGeometry(LineString.fromLngLats(committed)))
                     else FeatureCollection.fromFeatures(emptyArray())
                 )
-                committedTraveledIdx[0] = currentIdx
+                committedTraveledIdx[0] = tailIdx
             }
 
-            // Tail: from that vertex to the buffer point, rewritten on every update.
-            val tailStart = routePoints[currentIdx.coerceIn(0, routePoints.size - 1)]
-            tailSource.setGeoJson(
-                FeatureCollection.fromFeature(
-                    Feature.fromGeometry(
-                        LineString.fromLngLats(
-                            listOf(
-                                Point.fromLngLat(tailStart.longitude, tailStart.latitude),
-                                Point.fromLngLat(bufferPoint.longitude, bufferPoint.latitude)
-                            )
-                        )
-                    )
-                )
-            )
+            // Tail: from the last committed vertex over the vertices passed since to the buffer point, rewritten on every update.
+            val tailPoints = ArrayList<Point>(tailIdx - committedTraveledIdx[0] + 2)
+            for (i in committedTraveledIdx[0]..tailIdx) tailPoints.add(Point.fromLngLat(routePoints[i].longitude, routePoints[i].latitude))
+            tailPoints.add(Point.fromLngLat(bufferPoint.longitude, bufferPoint.latitude))
+            tailSource.setGeoJson(FeatureCollection.fromFeature(Feature.fromGeometry(LineString.fromLngLats(tailPoints))))
         }
     }
 
@@ -2588,7 +2611,7 @@ fun MapScreen(
     // Key daher auf das Ergebnis, damit ein Netz-Wechsel beim Boot den Stil nicht mehrfach neu laedt.
     val useOfflineStyle = uiState.isOffline || uiState.onlineMapUnavailable ||
         (uiState.hasLocalTiles && uiState.localMBTilesPath != null)
-    LaunchedEffect(mapInstance, uiState.isNightMode, uiState.hasLocalTiles, uiState.activeRegionId, uiState.tilesRegionId, useOfflineStyle, uiState.onlineTilesReady) {
+    LaunchedEffect(mapInstance, uiState.isNightMode, uiState.hasLocalTiles, uiState.activeRegionId, uiState.tilesRegionId, useOfflineStyle, uiState.onlineTilesReady, styleReloadNonce) {
         val map = mapInstance ?: return@LaunchedEffect
         // Erst nach dem lokalen Start online nachladen (Neuladen des Stils holt alle Kacheln erneut).
         com.example.campernavigator.util.TileInterceptor.onlineEnabled = uiState.onlineTilesReady
@@ -2711,6 +2734,21 @@ fun MapScreen(
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
+
+    // The GPU driver maps every GL buffer; hitting the per-process mapping limit kills the app. Trimming the map's
+    // caches does not release those buffers, a style reload does (brief redraw), so reload well before the limit.
+    LaunchedEffect(mapView) {
+        val limit = com.example.campernavigator.util.MappingUsage.limit()
+        while (true) {
+            delay(3_000)
+            val count = withContext(Dispatchers.IO) { com.example.campernavigator.util.MappingUsage.count() }
+            // The count can jump by tens of thousands within seconds, so leave plenty of headroom.
+            if (count < limit * 0.6) continue
+            Log.w("MapScreen", "Mappings $count/$limit: reloading style to release GL buffers")
+            styleReloadNonce++
+            delay(60_000)
+        }
+    }
     DisposableEffect(mapView, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
@@ -2746,8 +2784,20 @@ fun MapScreen(
         
         lifecycleOwner.lifecycle.addObserver(observer)
         mapView.addOnLayoutChangeListener(layoutListener)
+
+        // Other apps share the RAM: when the system asks for memory, let the map drop its tile cache and GL buffers.
+        val appContext = context.applicationContext
+        val memoryCallbacks = object : android.content.ComponentCallbacks2 {
+            override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {}
+            override fun onLowMemory() { mapView.onLowMemory() }
+            override fun onTrimMemory(level: Int) {
+                if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) mapView.onLowMemory()
+            }
+        }
+        appContext.registerComponentCallbacks(memoryCallbacks)
         
         onDispose { 
+            appContext.unregisterComponentCallbacks(memoryCallbacks)
             lifecycleOwner.lifecycle.removeObserver(observer)
             mapView.removeOnLayoutChangeListener(layoutListener)
         }
