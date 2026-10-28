@@ -135,6 +135,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -151,8 +152,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -182,6 +186,12 @@ import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 
 private const val PADDING_TRANSITION_MS = 650L
+
+// Padding glide before the route overview / the return to the tracking camera, so the map does not jump.
+private const val CAMERA_PADDING_GLIDE_MS = 450L
+
+// Layout changes (e.g. the keyboard appearing/disappearing) often come in bursts; only the last one counts.
+private const val LAYOUT_PADDING_DEBOUNCE_MS = 150L
 
 @Composable
 fun MapScreen(
@@ -417,6 +427,11 @@ fun MapScreen(
     // (oder startet gleich) die HOME/NAVI-Animation und updateMapPadding() darf das Padding nicht ueberschreiben.
     val paddingAppliedMode = remember { arrayOfNulls<NavigationUiMode>(1) }
 
+    // While the route overview is shown the map padding must stay at 0; layout changes must not restore it.
+    val overviewPaddingActive = remember { booleanArrayOf(false) }
+    val cameraScope = rememberCoroutineScope()
+    val resetTrackingJob = remember { arrayOfNulls<Job>(1) }
+    val pendingPaddingUpdate = remember { arrayOfNulls<Runnable>(1) }
     fun buildLocationOptions(leftPadding: Int = 0, topPadding: Int = 0): org.maplibre.android.location.LocationComponentOptions {
         return org.maplibre.android.location.LocationComponentOptions.builder(context)
             .padding(intArrayOf(leftPadding, topPadding, 0, 0))
@@ -499,6 +514,8 @@ fun MapScreen(
         val w = mapView.width
         if (h <= 0) return
         if (!isOverview) {
+            // The route overview shows the map without padding; keep it that way until the tracking camera returns.
+            if (overviewPaddingActive[0]) return
             val applied = paddingAppliedMode[0]
             if (applied != null && applied != uiState.navigationUiMode) return
             paddingAppliedMode[0] = uiState.navigationUiMode
@@ -583,12 +600,63 @@ fun MapScreen(
         }
     }
 
+    /** Target map padding (left, top) of the current UI mode, or null while a HOME/NAVI padding transition is running. */
+    fun targetMapPadding(): Pair<Int, Int>? {
+        val h = mapView.height
+        if (h <= 0) return null
+        val applied = paddingAppliedMode[0]
+        if (applied != null && applied != uiState.navigationUiMode) return null
+        val area = calculateNavigationSafeArea(uiState.navigationUiMode, mapView.width, h)
+        return area.left to area.top
+    }
+
+    /** Moves the map padding smoothly; a plain setPadding makes the map content jump. */
+    suspend fun glidePaddingTo(targetLeft: Int, targetTop: Int, durationMs: Long) {
+        val map = mapInstance ?: return
+        val from = map.padding
+        if (from[0] == targetLeft && from[1] == targetTop && from[2] == 0 && from[3] == 0) return
+        val lc = map.locationComponent
+        val tracking = lc.isLocationComponentActivated && lc.cameraMode != CameraMode.NONE
+        if (tracking) {
+            lc.paddingWhileTracking(
+                doubleArrayOf(targetLeft.toDouble(), targetTop.toDouble(), 0.0, 0.0),
+                durationMs
+            )
+            delay(durationMs + 50)
+        } else {
+            androidx.compose.animation.core.animate(
+                initialValue = 0f,
+                targetValue = 1f,
+                animationSpec = androidx.compose.animation.core.tween(
+                    durationMillis = durationMs.toInt(),
+                    easing = androidx.compose.animation.core.FastOutSlowInEasing
+                )
+            ) { f, _ ->
+                map.setPadding(
+                    (from[0] + (targetLeft - from[0]) * f).toInt(),
+                    (from[1] + (targetTop - from[1]) * f).toInt(),
+                    (from[2] * (1f - f)).toInt(),
+                    (from[3] * (1f - f)).toInt()
+                )
+            }
+            map.setPadding(targetLeft, targetTop, 0, 0)
+        }
+    }
+
+    // Layout changes (keyboard, system bars) come in bursts with changing sizes; only the settled size counts.
+    fun schedulePaddingUpdate() {
+        pendingPaddingUpdate[0]?.let { mapView.removeCallbacks(it) }
+        val update = Runnable { updateMapPadding() }
+        pendingPaddingUpdate[0] = update
+        mapView.postDelayed(update, LAYOUT_PADDING_DEBOUNCE_MS)
+    }
+
     fun resetCameraTracking() {
-        updateMapPadding()
         val map = mapInstance ?: return
         
         // Safety check: LocationComponent must be activated before calling setCameraMode
         if (!uiState.isMapReady || !map.locationComponent.isLocationComponentActivated) {
+            updateMapPadding()
             Log.w("MapScreen", "resetCameraTracking: LocationComponent not activated, skipping.")
             return
         }
@@ -597,43 +665,52 @@ fun MapScreen(
         // bevor wir das Tracking neu setzen, um Konflikte zu vermeiden.
         map.cancelTransitions()
         isSystemMovingCamera = true
-        
-        // Unified logic for returning to CCP (with/without navigation)
-        // We use setCameraMode for perfect synchronization between camera and icon.
-        val targetMode = if (uiState.isNorthUp) {
-            CameraMode.TRACKING 
-        } else {
-            // Wenn nicht North-Up, dann immer 3D Verfolgung (GPS Mode)
-            CameraMode.TRACKING_GPS
-        }
+        overviewPaddingActive[0] = false
 
-        val targetZoom = if (uiState.isNavigating) (uiState.suggestedZoom ?: 16.5) else 17.5
-        val targetBearing = if (!uiState.isNorthUp) uiState.currentBearing.toDouble() else 0.0
-        val targetTilt = if (!uiState.isNorthUp) (uiState.suggestedTilt ?: 45.0) else 0.0
+        resetTrackingJob[0]?.cancel()
+        resetTrackingJob[0] = cameraScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            // The padding glides to its target first (e.g. back from the route overview); setting it
+            // abruptly would make the map jump before the camera transition starts.
+            targetMapPadding()?.let { (left, top) -> glidePaddingTo(left, top, CAMERA_PADDING_GLIDE_MS) }
+            updateMapPadding()
 
-        try {
-            map.locationComponent.setCameraMode(
-                targetMode,
-                1000, // Duration of transition
-                targetZoom,
-                targetBearing,
-                targetTilt,
-                object : OnLocationCameraTransitionListener {
-                    override fun onLocationCameraTransitionFinished(cameraMode: Int) {
-                        isSystemMovingCamera = false
-                        viewModel.setCameraTracking(true)
-                        if (uiState.isNavigating) {
-                            viewModel.onNavigationCameraReady()
+            // Unified logic for returning to CCP (with/without navigation)
+            // We use setCameraMode for perfect synchronization between camera and icon.
+            val targetMode = if (uiState.isNorthUp) {
+                CameraMode.TRACKING 
+            } else {
+                // Wenn nicht North-Up, dann immer 3D Verfolgung (GPS Mode)
+                CameraMode.TRACKING_GPS
+            }
+
+            val targetZoom = if (uiState.isNavigating) (uiState.suggestedZoom ?: 16.5) else 17.5
+            val targetBearing = if (!uiState.isNorthUp) uiState.currentBearing.toDouble() else 0.0
+            val targetTilt = if (!uiState.isNorthUp) (uiState.suggestedTilt ?: 45.0) else 0.0
+
+            try {
+                map.locationComponent.setCameraMode(
+                    targetMode,
+                    1000, // Duration of transition
+                    targetZoom,
+                    targetBearing,
+                    targetTilt,
+                    object : OnLocationCameraTransitionListener {
+                        override fun onLocationCameraTransitionFinished(cameraMode: Int) {
+                            isSystemMovingCamera = false
+                            viewModel.setCameraTracking(true)
+                            if (uiState.isNavigating) {
+                                viewModel.onNavigationCameraReady()
+                            }
+                        }
+                        override fun onLocationCameraTransitionCanceled(cameraMode: Int) {
+                            isSystemMovingCamera = false
                         }
                     }
-                    override fun onLocationCameraTransitionCanceled(cameraMode: Int) {
-                        isSystemMovingCamera = false
-                    }
-                }
-            )
-        } catch (e: Exception) {
-            Log.e("MapScreen", "Error in setCameraMode: ${e.message}")
-            isSystemMovingCamera = false
+                )
+            } catch (e: Exception) {
+                Log.e("MapScreen", "Error in setCameraMode: ${e.message}")
+                isSystemMovingCamera = false
+            }
         }
     }
 
@@ -708,7 +785,7 @@ fun MapScreen(
                 mapView.apply {
                     // Auto update padding on layout changes (guarded during the HOME/NAVI animation)
                     addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-                        updateMapPadding()
+                        schedulePaddingUpdate()
                     }
 
                     getMapAsync { map ->
@@ -2143,11 +2220,9 @@ fun MapScreen(
                                         isSearchOverlayVisible = false
                                         isMapManagementOpen = true // Back to settings
                                     } else {
+                                        // The camera is moved by the route overview once the route is calculated.
                                         viewModel.selectSearchResult(result)
                                         isSearchOverlayVisible = false
-                                        mapInstance?.animateCamera(
-                                            org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(result.location, 19.0)
-                                        )
                                     }
                                 }
                             )
@@ -2286,7 +2361,7 @@ fun MapScreen(
     }
 
     // --- STATIC MAP CONTENT (Markers, Full Route) ---
-    LaunchedEffect(uiState.currentRoute, uiState.startPoint, uiState.destinationPoint, uiState.isNavigating, styleUpdateTrigger, mapInstance) {
+    LaunchedEffect(uiState.currentRoute, uiState.startPoint, uiState.destinationPoint, styleUpdateTrigger, mapInstance) {
         val map = mapInstance ?: return@LaunchedEffect
         val style = map.style ?: return@LaunchedEffect
         // Note: We no longer check style.isFullyLoaded since local styles
@@ -2456,43 +2531,60 @@ fun MapScreen(
                     map.cancelTransitions()
                     map.locationComponent.cameraMode = CameraMode.NONE
                     viewModel.setCameraTracking(false)
-                    updateMapPadding(isOverview = true)
+                    isSystemMovingCamera = true
+                    overviewPaddingActive[0] = true
 
-                    val builder = LatLngBounds.Builder()
-                    route.points.forEach { builder.include(it) }
-                    try {
-                        isSystemMovingCamera = true
-                        
-                        // Dynamic percent padding (OEM Style: centering in free area)
-                        val w = mapView.width.coerceAtLeast(100)
-                        val h = mapView.height.coerceAtLeast(100)
-                        
-                        val padLeft = (w * 0.15).toInt()  // 15% space for menu
-                        val padRight = (w * 0.42).toInt() // 42% space for info card (generous)
-                        val padTop = (h * 0.15).toInt()   
-                        val padBottom = (h * 0.15).toInt() 
+                    val routePoints = route.points
+                    resetTrackingJob[0]?.cancel()
+                    resetTrackingJob[0] = cameraScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                        try {
+                            // The map padding glides to 0 first. Setting it directly and resetting tilt/bearing with
+                            // moveCamera made the view jump before the overview animation even started.
+                            glidePaddingTo(0, 0, CAMERA_PADDING_GLIDE_MS)
 
-                        android.util.Log.d("MapScreen", "Starte Overview-Zoom: L=$padLeft, T=$padTop, R=$padRight, B=$padBottom")
-                        
-                        // Zuerst Tilt und Bearing auf 0 setzen, um Verzerrungen beim Bounds-Zoom zu vermeiden
-                        map.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.tiltTo(0.0))
-                        map.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.bearingTo(0.0))
+                            val builder = LatLngBounds.Builder()
+                            routePoints.forEach { builder.include(it) }
+                            val bounds = builder.build()
 
-                        map.animateCamera(
-                            org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(
-                                builder.build(), padLeft, padTop, padRight, padBottom
-                            ),
-                            2000,
-                            object : MapLibreMap.CancelableCallback {
-                                override fun onFinish() { isSystemMovingCamera = false }
-                                override fun onCancel() { isSystemMovingCamera = false }
+                            // Dynamic percent padding (OEM Style: centering in free area)
+                            val w = mapView.width.coerceAtLeast(100)
+                            val h = mapView.height.coerceAtLeast(100)
+
+                            val padLeft = (w * 0.15).toInt()  // 15% space for menu
+                            val padRight = (w * 0.42).toInt() // 42% space for info card (generous)
+                            val padTop = (h * 0.15).toInt()
+                            val padBottom = (h * 0.15).toInt()
+
+                            android.util.Log.d("MapScreen", "Starte Overview-Zoom: L=$padLeft, T=$padTop, R=$padRight, B=$padBottom")
+
+                            // Center, zoom, tilt and bearing (both 0 to avoid distortion) in a single animation.
+                            val target = map.getCameraForLatLngBounds(
+                                bounds, intArrayOf(padLeft, padTop, padRight, padBottom), 0.0, 0.0
+                            )
+                            val update = if (target != null) {
+                                org.maplibre.android.camera.CameraUpdateFactory.newCameraPosition(target)
+                            } else {
+                                org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(
+                                    bounds, padLeft, padTop, padRight, padBottom
+                                )
                             }
-                        )
-                        lastZoomedRoute = route 
-                    } catch (e: Exception) {
-                        android.util.Log.e("MapScreen", "Fehler beim Übersichts-Zoom", e)
-                        isSystemMovingCamera = false
+
+                            map.animateCamera(
+                                update,
+                                2000,
+                                object : MapLibreMap.CancelableCallback {
+                                    override fun onFinish() { isSystemMovingCamera = false }
+                                    override fun onCancel() { isSystemMovingCamera = false }
+                                }
+                            )
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            android.util.Log.e("MapScreen", "Fehler beim Übersichts-Zoom", e)
+                            isSystemMovingCamera = false
+                        }
                     }
+                    lastZoomedRoute = route 
                 }
             } else {
                 // FALL 3: Freies Fahren (keine Route, keine Navigation)
@@ -2554,40 +2646,17 @@ fun MapScreen(
         val map = mapInstance
         val w = mapView.width
         val h = mapView.height
-        if (map != null && uiState.isInitialZoomPerformed && w > 0 && h > 0) {
+        if (map != null && uiState.isInitialZoomPerformed && w > 0 && h > 0 && !overviewPaddingActive[0]) {
             val from = map.padding
             val to = calculateNavigationSafeArea(uiState.navigationUiMode, w, h)
-            val startLeft = from[0]
-            val startTop = from[1]
             val targetLeft = to.left
             val targetTop = to.top
 
-            if (startLeft != targetLeft || startTop != targetTop) {
-                FileLogger.log("MapScreen: padding transition ${uiState.navigationUiMode} ($startLeft,$startTop) -> ($targetLeft,$targetTop)")
-                val lc = map.locationComponent
-                val tracking = lc.isLocationComponentActivated && lc.cameraMode != CameraMode.NONE
-                if (tracking) {
-                    // Einzige Variante, die die Kamera auch ohne neuen GPS-Fix stetig verschiebt
-                    // (setPadding/applyStyle/paddingTo allein bewegen die Karte nicht sichtbar).
-                    lc.paddingWhileTracking(
-                        doubleArrayOf(targetLeft.toDouble(), targetTop.toDouble(), 0.0, 0.0),
-                        PADDING_TRANSITION_MS
-                    )
-                    delay(PADDING_TRANSITION_MS + 50)
-                } else {
-                    androidx.compose.animation.core.animate(
-                        initialValue = 0f,
-                        targetValue = 1f,
-                        animationSpec = androidx.compose.animation.core.tween(
-                            durationMillis = PADDING_TRANSITION_MS.toInt(),
-                            easing = androidx.compose.animation.core.FastOutSlowInEasing
-                        )
-                    ) { f, _ ->
-                        val curLeft = (startLeft + (targetLeft - startLeft) * f).toInt()
-                        val curTop = (startTop + (targetTop - startTop) * f).toInt()
-                        map.setPadding(curLeft, curTop, 0, 0)
-                    }
-                }
+            if (from[0] != targetLeft || from[1] != targetTop) {
+                FileLogger.log("MapScreen: padding transition ${uiState.navigationUiMode} (${from[0]},${from[1]}) -> ($targetLeft,$targetTop)")
+                // While tracking, only paddingWhileTracking moves the camera steadily without a new GPS fix
+                // (setPadding/applyStyle/paddingTo alone do not visibly move the map).
+                glidePaddingTo(targetLeft, targetTop, PADDING_TRANSITION_MS)
             }
         }
 
@@ -2779,7 +2848,7 @@ fun MapScreen(
         // Jede Layout-Runde wendet das Padding erneut an (korrigiert es auch nach Style-Reloads).
         // Waehrend der HOME/NAVI-Animation verhindert paddingTransitionRunning das Ueberschreiben.
         val layoutListener = android.view.View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-            updateMapPadding()
+            schedulePaddingUpdate()
         }
         
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -2797,6 +2866,8 @@ fun MapScreen(
         appContext.registerComponentCallbacks(memoryCallbacks)
         
         onDispose { 
+            pendingPaddingUpdate[0]?.let { mapView.removeCallbacks(it) }
+            resetTrackingJob[0]?.cancel()
             appContext.unregisterComponentCallbacks(memoryCallbacks)
             lifecycleOwner.lifecycle.removeObserver(observer)
             mapView.removeOnLayoutChangeListener(layoutListener)
