@@ -432,6 +432,8 @@ fun MapScreen(
     val cameraScope = rememberCoroutineScope()
     val resetTrackingJob = remember { arrayOfNulls<Job>(1) }
     val pendingPaddingUpdate = remember { arrayOfNulls<Runnable>(1) }
+    // Padding last applied to the LocationComponent style; applying it again triggers a new layout pass.
+    val appliedStylePadding = remember { intArrayOf(-1, -1) }
     fun buildLocationOptions(leftPadding: Int = 0, topPadding: Int = 0): org.maplibre.android.location.LocationComponentOptions {
         return org.maplibre.android.location.LocationComponentOptions.builder(context)
             .padding(intArrayOf(leftPadding, topPadding, 0, 0))
@@ -441,6 +443,31 @@ fun MapScreen(
             .minZoomIconScale(1.0f)
             .compassAnimationEnabled(false)
             .build()
+    }
+
+    /**
+     * Applies the map padding only when it changed. Each setPadding/applyStyle triggers a layout pass,
+     * and the layout listener calls back into the padding update - unconditional calls loop forever.
+     * Returns true if something was changed.
+     */
+    fun applyMapPadding(map: MapLibreMap, left: Int, top: Int): Boolean {
+        var changed = false
+        val cur = map.padding
+        if (cur[0] != left || cur[1] != top || cur[2] != 0 || cur[3] != 0) {
+            map.setPadding(left, top, 0, 0)
+            changed = true
+        }
+        if (appliedStylePadding[0] != left || appliedStylePadding[1] != top) {
+            try {
+                map.locationComponent.applyStyle(buildLocationOptions(left, top))
+                appliedStylePadding[0] = left
+                appliedStylePadding[1] = top
+                changed = true
+            } catch (e: Exception) {
+                // Ignore while map/location component is initializing.
+            }
+        }
+        return changed
     }
 
     @SuppressLint("MissingPermission")
@@ -486,6 +513,8 @@ fun MapScreen(
             .build()
         
         locationComponent.activateLocationComponent(options)
+        appliedStylePadding[0] = leftPadding
+        appliedStylePadding[1] = topPadding
         locationComponent.isLocationComponentEnabled = true
         // Ensure camera modes remain correct after style change
         locationComponent.cameraMode = if (uiState.isInitialZoomPerformed) CameraMode.TRACKING else CameraMode.NONE
@@ -552,50 +581,25 @@ fun MapScreen(
                 val topPadding = homePadding.second
 
                 // Update map padding for FULLSCREEN mode while keeping visibility
-                map.setPadding(
-                    leftPadding,
-                    topPadding,
-                    0,
-                    0
-                )
-
-                try {
-                    map.locationComponent.applyStyle(
-                        buildLocationOptions(leftPadding, topPadding)
-                    )
-                } catch (e: Exception) {
+                if (applyMapPadding(map, leftPadding, topPadding)) {
+                    // Notify ViewModel that launcher is coming into foreground
+                    FileLogger.log("MapScreen: HOME mode - Map going to background")
                 }
-
-                // Notify ViewModel that launcher is coming into foreground
-                FileLogger.log("MapScreen: HOME mode - Map going to background")
 
                 return
             }
 
             NavigationUiMode.FULLSCREEN -> {
-                Log.d(
-                    "MapScreen",
-                    "updateMapPadding: FULLSCREEN on ${w}x${h}, CCP in lower third"
-                )
                 val topPadding = (h * 0.33f).roundToInt()
 
-                map.setPadding(
-                    0,
-                    topPadding,
-                    0,
-                    0
-                )
-
-                try {
-                    map.locationComponent.applyStyle(
-                        buildLocationOptions(0, topPadding)
+                if (applyMapPadding(map, 0, topPadding)) {
+                    Log.d(
+                        "MapScreen",
+                        "updateMapPadding: FULLSCREEN on ${w}x${h}, CCP in lower third"
                     )
-                 } catch (e: Exception) {
-                       // Ignore while map/location component is initializing.
-                 }
-                
-                // Notify ViewModel that map is in full foreground
-                FileLogger.log("MapScreen: FULLSCREEN mode - Map in full foreground")
+                    // Notify ViewModel that map is in full foreground
+                    FileLogger.log("MapScreen: FULLSCREEN mode - Map in full foreground")
+                }
             }
         }
     }
